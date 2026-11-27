@@ -1,0 +1,8 @@
+{
+  "name": "Remix Confiança Repara",
+  "description": "Plataforma multi-empresa de gestão de serviços técnicos, financeiro (IVA PT 6%/23%), repasses semanais e quilometragem em Portugal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

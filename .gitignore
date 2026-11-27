@@ -1,0 +1,21 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Dados locais e bancos (nunca no repositório)
+*.db
+*.db-wal
+*.db-shm
+*.err.log
+restore-pending*
+*.restore-pending
+*.antes-restauro-*
+*.substituida-*
+uploads/
+backups/
+dev-dist/
