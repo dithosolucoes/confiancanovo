@@ -57,7 +57,7 @@ const stripeClient = process.env.STRIPE_SECRET_KEY?.trim()
   ? new Stripe(process.env.STRIPE_SECRET_KEY.trim())
   : null;
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Métodos de pagamento da Stripe, em lista (ativar cada um exige a conta Stripe configurada)
 const STRIPE_PAYMENT_METHODS = (process.env.STRIPE_PAYMENT_METHODS || '')

@@ -1,13 +1,19 @@
 import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import fs from 'node:fs';
 import { calculateServiceFinancials } from '../src/core/finance/calculator.ts';
 import { getWeeklyPayoutCycle } from '../src/core/finance/weekly-cycle.ts';
 import { CONFIANCA_COMPANY } from '../src/core/constants/company.ts';
 import { initBusinessParameters, getParamAt } from './params.ts';
 import { applyPendingRestore } from './restore.ts';
 
-export const dbPath = path.resolve(process.cwd(), 'confianca.db');
+// DATA_DIR aponta para o volume persistente em produção (ex.: /data na Railway)
+const dataDir = process.env.DATA_DIR?.trim()
+  ? path.resolve(process.env.DATA_DIR.trim())
+  : process.cwd();
+fs.mkdirSync(dataDir, { recursive: true });
+export const dbPath = path.join(dataDir, 'confianca.db');
 // Se a gestão pediu uma restauração, a troca acontece aqui, antes de abrir a base
 applyPendingRestore(dbPath);
 export const db = new Database(dbPath);
