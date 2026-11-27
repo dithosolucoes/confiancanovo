@@ -2,6 +2,14 @@ import type express from 'express';
 import crypto from 'node:crypto';
 import type { UserRole } from '../../src/types/domain.ts';
 import { getWeeklyPayoutCycle } from '../../src/core/finance/weekly-cycle.ts';
+import {
+  LABOR_EXTRA_MAX_EUR,
+  PART_UNIT_MAX_EUR,
+  parseBoundedAmount,
+  parseBoundedQuantity,
+  resolvePartSalePrice,
+} from '../../src/core/finance/calculator.ts';
+import { getParamAt } from '../params.ts';
 
 // Orçamento, sugestão de horário, garantia, avaliação, GPS e ETA, calendário, agenda e visitas de retorno,
 // movidos de server.ts sem alteração de comportamento. Três funções de registro, cada uma no ponto original:
@@ -52,6 +60,13 @@ export interface OrcamentoRouteContext {
 
 export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRouteContext) {
   const { db, requireAuth, canUserAccessOrder, projectOrderForRole, createNotification, broadcastToOrder, sendTransactionalEmail, recalculateOrderInDb, notifyTechnicianOfValueChange } = ctx;
+
+  // C-11: colunas pending_labor_cost / pending_extra_fee são criadas na migração do db.ts.
+  // Valor pendente fica fora de labor_cost/extra_fee até o gestor aprovar, por isso não entra no repasse.
+  const soColumns = new Set(
+    (db.prepare('PRAGMA table_info(service_orders)').all() as Array<{ name: string }>).map((c) => c.name)
+  );
+  if (!soColumns.has('labor_extra_pending_at')) db.exec('ALTER TABLE service_orders ADD COLUMN labor_extra_pending_at TEXT');
 
   // Schedule Suggestion (Technician/Admin suggests date & time -> Customer/Partner/Admin approves or rejects)
   app.post('/api/orders/:id/suggest-schedule', requireAuth(['technician', 'super_admin']), (req, res) => {
@@ -204,6 +219,73 @@ export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRout
     if (!canUserAccessOrder(user, existing)) return res.status(403).json({ error: 'Sem permissão.' });
 
     const { labor_cost, extra_fee, additional_cost, vat_rate, items, send_to_customer } = req.body ?? {};
+    const isGestor = user.role !== 'technician';
+
+    // C-11: M.O. e taxa extra validadas no servidor (não negativas, até LABOR_EXTRA_MAX_EUR)
+    let laborValue: number | undefined;
+    let extraValue: number | undefined;
+    if (labor_cost !== undefined) {
+      const r = parseBoundedAmount(labor_cost, LABOR_EXTRA_MAX_EUR, 'Mão de obra');
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      laborValue = r.value;
+    }
+    if (extra_fee !== undefined) {
+      const r = parseBoundedAmount(extra_fee, LABOR_EXTRA_MAX_EUR, 'Taxa extra');
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      extraValue = r.value;
+    }
+
+    // C-12 e quantidade de peça: validados e precificados no servidor antes de gravar
+    type ValidItem = { supplier_id: string | null; description: string; quantity: number; cost: number; price: number };
+    const validItems: ValidItem[] = [];
+    if (Array.isArray(items)) {
+      // Técnico não recebe custo do fornecedor: preserva o custo já gravado pela gestão (por descrição)
+      const knownCost = new Map<string, number>();
+      if (!isGestor) {
+        const rows = db
+          .prepare('SELECT description, supplier_unit_cost FROM service_order_items WHERE service_order_id = ?')
+          .all(existing.id) as Array<{ description: string; supplier_unit_cost: number }>;
+        for (const r of rows) knownCost.set(String(r.description).trim(), Number(r.supplier_unit_cost) || 0);
+      }
+      const markupPct = getParamAt(db, 'parts_markup_pct');
+
+      for (const item of items) {
+        if (!item?.description) continue;
+        const description = String(item.description).trim();
+
+        const qty = item.quantity === undefined || item.quantity === null
+          ? { ok: true as const, value: 1 }
+          : parseBoundedQuantity(item.quantity, `Peça "${description}"`);
+        if (!qty.ok) return res.status(400).json({ error: qty.error });
+
+        let cost: number;
+        if (isGestor) {
+          const c = parseBoundedAmount(item.supplier_unit_cost ?? 0, PART_UNIT_MAX_EUR, `Custo da peça "${description}"`);
+          if (!c.ok) return res.status(400).json({ error: c.error });
+          cost = c.value;
+        } else {
+          cost = knownCost.get(description) ?? 0;
+        }
+
+        let requested: number | null = null;
+        if (item.customer_unit_price !== undefined && item.customer_unit_price !== null && item.customer_unit_price !== '') {
+          const p = parseBoundedAmount(item.customer_unit_price, PART_UNIT_MAX_EUR, `Preço da peça "${description}"`);
+          if (!p.ok) return res.status(400).json({ error: p.error });
+          requested = p.value;
+        }
+
+        const price = resolvePartSalePrice({ supplierUnitCost: cost, requestedPrice: requested, markupPct });
+        if (!price.ok) return res.status(400).json({ error: price.error });
+
+        validItems.push({
+          supplier_id: item.supplier_id || null,
+          description,
+          quantity: qty.value,
+          cost,
+          price: price.value,
+        });
+      }
+    }
 
     // Valores antes da alteração (para avisar o técnico só do que mudou)
     const partsTotalsOf = (orderId: string) => {
@@ -220,10 +302,35 @@ export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRout
     const extraBefore = Number(existing.extra_fee || 0);
 
     const tx = db.transaction(() => {
+      // Gestão lança direto; técnico só cria pendência para aprovação do gestor (C-11)
+      if (laborValue !== undefined || extraValue !== undefined) {
+        if (isGestor) {
+          if (laborValue !== undefined) {
+            db.prepare('UPDATE service_orders SET labor_cost = ?, pending_labor_cost = NULL WHERE id = ?').run(laborValue, existing.id);
+          }
+          if (extraValue !== undefined) {
+            db.prepare('UPDATE service_orders SET extra_fee = ?, pending_extra_fee = NULL WHERE id = ?').run(extraValue, existing.id);
+          }
+          db.prepare(`
+            UPDATE service_orders SET labor_extra_pending_at = CASE
+              WHEN pending_labor_cost IS NULL AND pending_extra_fee IS NULL THEN NULL
+              ELSE labor_extra_pending_at END
+            WHERE id = ?
+          `).run(existing.id);
+        } else {
+          db.prepare(`
+            UPDATE service_orders SET
+              pending_labor_cost = COALESCE(?, pending_labor_cost),
+              pending_extra_fee = COALESCE(?, pending_extra_fee),
+              labor_extra_pending_at = datetime('now'),
+              updated_at = datetime('now')
+            WHERE id = ?
+          `).run(laborValue ?? null, extraValue ?? null, existing.id);
+        }
+      }
+
       db.prepare(`
         UPDATE service_orders SET
-          labor_cost = COALESCE(?, labor_cost),
-          extra_fee = COALESCE(?, extra_fee),
           additional_cost = COALESCE(?, additional_cost),
           vat_rate = COALESCE(?, vat_rate),
           quote_status = CASE WHEN ? THEN 'sent' ELSE quote_status END,
@@ -231,8 +338,6 @@ export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRout
           updated_at = datetime('now')
         WHERE id = ?
       `).run(
-        labor_cost !== undefined ? Number(labor_cost) : null,
-        extra_fee !== undefined ? Number(extra_fee) : null,
         additional_cost !== undefined ? Number(additional_cost) : null,
         vat_rate !== undefined && user.role === 'super_admin'
           ? Number(vat_rate) === 6
@@ -250,16 +355,15 @@ export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRout
           INSERT INTO service_order_items (id, service_order_id, supplier_id, description, quantity, supplier_unit_cost, customer_unit_price, is_paid_to_supplier)
           VALUES (?, ?, ?, ?, ?, ?, ?, 0)
         `);
-        for (const item of items) {
-          if (!item.description) continue;
+        for (const item of validItems) {
           insItem.run(
             `item-${crypto.randomUUID().slice(0, 8)}`,
             existing.id,
-            item.supplier_id || null,
-            String(item.description).trim(),
-            Number(item.quantity) || 1,
-            user.role === 'super_admin' ? Number(item.supplier_unit_cost || 0) : 0,
-            Number(item.customer_unit_price || 0)
+            item.supplier_id,
+            item.description,
+            item.quantity,
+            item.cost,
+            item.price
           );
         }
       }
@@ -267,6 +371,19 @@ export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRout
 
     tx();
     const updated = recalculateOrderInDb(existing.id) as any;
+
+    // C-11: técnico lançou valores pendentes -> avisa a gestão
+    if (!isGestor && (laborValue !== undefined || extraValue !== undefined)) {
+      const admins = db.prepare("SELECT id FROM profiles WHERE role = 'super_admin' AND is_active = 1").all() as Array<{ id: string }>;
+      for (const adm of admins) {
+        createNotification(
+          adm.id,
+          `M.O./taxa extra a aprovar (${existing.reference_code})`,
+          `Técnico lançou: M.O. € ${Number(updated.pending_labor_cost ?? 0).toFixed(2)}, taxa extra € ${Number(updated.pending_extra_fee ?? 0).toFixed(2)}. Só entra no repasse após aprovação.`,
+          'in_app'
+        );
+      }
+    }
 
     // Aviso ao técnico responsável quando o custo muda (quem alterou não recebe o aviso)
     const partsAfter = partsTotalsOf(existing.id);
@@ -381,6 +498,63 @@ export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRout
           html: `<p>Olá ${tech.full_name},</p><p>O orçamento da ordem <strong>${existing.reference_code}</strong> foi <strong>${decision === 'accepted' ? 'aprovado' : 'recusado'}</strong> pelo cliente.</p>`,
         });
       }
+    }
+
+    broadcastToOrder(existing.id, { type: 'order:updated', orderId: existing.id });
+    res.json({ order: projectOrderForRole(updated, user.role) });
+  });
+
+  // C-11: gestor aprova ou recusa M.O./taxa extra lançadas pelo técnico.
+  // Só o valor aprovado passa a labor_cost/extra_fee, que é a base do repasse.
+  app.post('/api/orders/:id/labor-extra-decision', requireAuth(['super_admin', 'company_admin']), (req, res) => {
+    const user: AuthUser = (req as any).authUser;
+    const existing = db.prepare('SELECT * FROM service_orders WHERE id = ? AND deleted_at IS NULL').get(req.params.id) as any;
+    if (!existing) return res.status(404).json({ error: 'Ordem não encontrada.' });
+    if (!canUserAccessOrder(user, existing)) return res.status(403).json({ error: 'Sem permissão.' });
+
+    const { decision } = req.body ?? {};
+    if (decision !== 'approved' && decision !== 'rejected') {
+      return res.status(400).json({ error: 'Decisão inválida.' });
+    }
+    if (existing.pending_labor_cost == null && existing.pending_extra_fee == null) {
+      return res.status(400).json({ error: 'Não há M.O. ou taxa extra pendentes de aprovação.' });
+    }
+
+    db.transaction(() => {
+      if (decision === 'approved') {
+        db.prepare(`
+          UPDATE service_orders SET
+            labor_cost = COALESCE(pending_labor_cost, labor_cost),
+            extra_fee = COALESCE(pending_extra_fee, extra_fee),
+            pending_labor_cost = NULL,
+            pending_extra_fee = NULL,
+            labor_extra_pending_at = NULL,
+            updated_at = datetime('now')
+          WHERE id = ?
+        `).run(existing.id);
+      } else {
+        db.prepare(`
+          UPDATE service_orders SET
+            pending_labor_cost = NULL,
+            pending_extra_fee = NULL,
+            labor_extra_pending_at = NULL,
+            updated_at = datetime('now')
+          WHERE id = ?
+        `).run(existing.id);
+      }
+    })();
+
+    const updated = recalculateOrderInDb(existing.id) as any;
+
+    if (existing.technician_id) {
+      createNotification(
+        existing.technician_id,
+        `M.O./taxa extra ${decision === 'approved' ? 'aprovadas' : 'recusadas'} (${existing.reference_code})`,
+        decision === 'approved'
+          ? `M.O. € ${Number(updated.labor_cost).toFixed(2)}, taxa extra € ${Number(updated.extra_fee).toFixed(2)}. Repasse atualizado: € ${Number(updated.technician_payout).toFixed(2)}.`
+          : 'A gestão recusou a M.O./taxa extra lançadas. Não entram no repasse.',
+        'in_app'
+      );
     }
 
     broadcastToOrder(existing.id, { type: 'order:updated', orderId: existing.id });

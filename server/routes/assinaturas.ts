@@ -65,9 +65,15 @@ export function registerAssinaturasRoutes(app: express.Express, ctx: Assinaturas
       return res.status(404).json({ error: 'Cliente selecionado não encontrado.' });
     }
 
-    const cat = db.prepare('SELECT * FROM service_catalog WHERE id = ?').get(catalog_id) as any;
-    const planName = cat?.name || 'Plano Mensal Limpeza Residencial (€49,99)';
-    const price = Number(cat?.subscription_price || cat?.base_service_fee || 49.99);
+    // C-09: só um item do catálogo marcado como assinatura e ativo; o preço vem do servidor (nunca do corpo).
+    const cat = db
+      .prepare('SELECT * FROM service_catalog WHERE id = ? AND is_subscription = 1 AND is_active = 1')
+      .get(String(catalog_id)) as any;
+    if (!cat) {
+      return res.status(400).json({ error: 'Plano de subscrição inválido ou indisponível.' });
+    }
+    const planName = cat.name || 'Plano Mensal Limpeza Residencial (€49,99)';
+    const price = Number(cat.subscription_price || cat.base_service_fee || 49.99);
     const cleanAddress = String(service_address).trim();
     const safeDay = Math.min(28, Math.max(1, Number(preferred_day) || 15));
 
@@ -166,6 +172,10 @@ export function registerAssinaturasRoutes(app: express.Express, ctx: Assinaturas
       return res.status(403).json({ error: 'Sem permissão.' });
     }
     const valid = ['active', 'paused', 'cancelled'];
+    // C-10: subscrição cancelada não volta a ativa sem pagamento; a reativação exige novo pagamento.
+    if (sub.status === 'cancelled' && req.body?.status === 'active') {
+      return res.status(402).json({ error: 'Reativar a subscrição exige pagamento.' });
+    }
     const nextStatus = valid.includes(req.body?.status) ? req.body.status : sub.status;
     db.prepare('UPDATE service_subscriptions SET status = ? WHERE id = ?').run(nextStatus, sub.id);
     res.json({ subscription: db.prepare('SELECT * FROM service_subscriptions WHERE id = ?').get(sub.id) });

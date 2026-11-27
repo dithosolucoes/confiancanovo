@@ -56,6 +56,13 @@ interface DraftItem {
   supplier_id: string;
 }
 
+// C-11: M.O./taxa extra lançadas pelo técnico, aguardando decisão da gestão (server/routes/orcamento.ts)
+interface LaborExtraPendingFields {
+  pending_labor_cost?: number | null;
+  pending_extra_fee?: number | null;
+  labor_extra_pending_at?: string | null;
+}
+
 function formatExecutionDuration(start?: string | null, end?: string | null): string | null {
   if (!start || !end) return null;
   const s = new Date(start).getTime();
@@ -629,6 +636,28 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
       });
       await loadOrder();
       notify('Orçamento enviado para aprovação do cliente.');
+    } catch (err: any) {
+      setActionError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleLaborExtraDecision(decision: 'approved' | 'rejected') {
+    if (!order) return;
+    setSaving(true);
+    setActionError(null);
+    try {
+      await apiFetch(`/api/orders/${order.id}/labor-extra-decision`, {
+        method: 'POST',
+        body: JSON.stringify({ decision }),
+      });
+      await loadOrder();
+      notify(
+        decision === 'approved'
+          ? 'M.O. e taxa extra aprovadas. Repasse atualizado.'
+          : 'M.O. e taxa extra recusadas. Não entram no repasse.'
+      );
     } catch (err: any) {
       setActionError(err.message);
     } finally {
@@ -1839,6 +1868,49 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
                 </button>
               )}
             </div>
+
+            {/* C-11: estado pendente de M.O./taxa extra do técnico */}
+            {(() => {
+              const pending = order as (ServiceOrder & LaborExtraPendingFields) | null;
+              const pendingLabor = pending?.pending_labor_cost ?? null;
+              const pendingExtra = pending?.pending_extra_fee ?? null;
+              if (pendingLabor == null && pendingExtra == null) return null;
+              const canDecide = isAdmin || user.role === 'company_admin';
+              return (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-3">
+                  <p className="text-xs text-amber-900">
+                    Lançamento do técnico:{' '}
+                    {pendingLabor != null && <span className="font-semibold tabular-nums">M.O. {formatEUR(pendingLabor)}</span>}
+                    {pendingLabor != null && pendingExtra != null && ' · '}
+                    {pendingExtra != null && <span className="font-semibold tabular-nums">Taxa extra {formatEUR(pendingExtra)}</span>}
+                    {' — '}
+                    <span className="font-semibold">aguardando aprovação da gestão</span>. Só entra no repasse após aprovação.
+                  </p>
+                  {canDecide && (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => handleLaborExtraDecision('approved')}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        <span>Aprovar</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => handleLaborExtraDecision('rejected')}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        <span>Recusar</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {(isAdmin || isTech) && !order.technician_payout_locked ? (
               <div className="space-y-3">

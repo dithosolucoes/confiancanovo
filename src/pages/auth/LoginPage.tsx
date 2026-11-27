@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight, ShieldCheck } from 'lucide-react';
 import { ROLE_HOME_ROUTES, useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
-import type { LanguageCode } from '../../types/domain';
+import type { LanguageCode, UserProfile } from '../../types/domain';
 
 const DEMO_PORTALS = [
   {
@@ -49,7 +49,9 @@ export function LoginPage() {
     setLoading(true);
     try {
       const user = await login(email, password);
-      navigate(ROLE_HOME_ROUTES[user.role]);
+      // C-06: técnico com senha temporária é obrigado a trocá-la antes de entrar (server/routes/auth.ts:108)
+      const mustChange = Boolean((user as UserProfile & { must_change_password?: boolean }).must_change_password);
+      navigate(mustChange ? '/trocar-senha' : ROLE_HOME_ROUTES[user.role]);
     } catch (err: any) {
       setError(err.message);
     } finally {

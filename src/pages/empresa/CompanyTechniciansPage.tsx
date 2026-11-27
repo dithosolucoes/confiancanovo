@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Edit2, Eye, Plus, Power } from 'lucide-react';
+import { Check, Copy, Edit2, Eye, Plus, Power } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { PortalLayout } from '../../components/PortalLayout';
 import { TechnicianMirrorModal } from '../../components/TechnicianMirrorModal';
@@ -23,6 +23,9 @@ export function CompanyTechniciansPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modalError, setModalError] = useState<string | null>(null);
+  // C-06: senha temporária devolvida na criação. Fica só no estado da tela (mostrada uma vez).
+  const [createdCred, setCreatedCred] = useState<{ name: string; email: string; password: string } | null>(null);
+  const [passwordCopied, setPasswordCopied] = useState(false);
 
   async function loadTechs() {
     setError(null);
@@ -79,7 +82,7 @@ export function CompanyTechniciansPage() {
           }),
         });
       } else {
-        await apiFetch('/api/technicians', {
+        const res = await apiFetch<{ technician: UserProfile; temporary_password?: string }>('/api/technicians', {
           method: 'POST',
           body: JSON.stringify({
             full_name: fullName,
@@ -90,6 +93,10 @@ export function CompanyTechniciansPage() {
             emergency_contact: emergencyContact,
           }),
         });
+        if (res.temporary_password) {
+          setCreatedCred({ name: fullName, email, password: res.temporary_password });
+          setPasswordCopied(false);
+        }
       }
       setModalOpen(false);
       setEditingTech(null);
@@ -99,6 +106,21 @@ export function CompanyTechniciansPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function copyTempPassword() {
+    if (!createdCred) return;
+    try {
+      await navigator.clipboard.writeText(createdCred.password);
+      setPasswordCopied(true);
+    } catch {
+      setError('Não foi possível copiar. Selecione a senha e copie manualmente.');
+    }
+  }
+
+  function closeCredModal() {
+    setCreatedCred(null);
+    setPasswordCopied(false);
   }
 
   async function handleToggleActive() {
@@ -325,6 +347,45 @@ export function CompanyTechniciansPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {createdCred && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-xl space-y-4">
+            <div className="border-b border-slate-100 pb-3">
+              <h3 className="text-base font-semibold text-slate-900">Senha temporária do técnico</h3>
+              <p className="text-xs text-slate-500">
+                {createdCred.name} · {createdCred.email}
+              </p>
+            </div>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+              Esta senha só é mostrada agora. Copie e envie ao técnico por canal seguro. No primeiro acesso,
+              o técnico tem de trocar a senha.
+            </div>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 select-all rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-sm text-slate-900">
+                {createdCred.password}
+              </code>
+              <button
+                type="button"
+                onClick={copyTempPassword}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+              >
+                {passwordCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                <span>{passwordCopied ? 'Copiada' : 'Copiar'}</span>
+              </button>
+            </div>
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={closeCredModal}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-medium text-white hover:bg-slate-800"
+              >
+                Já copiei, fechar
+              </button>
+            </div>
           </div>
         </div>
       )}

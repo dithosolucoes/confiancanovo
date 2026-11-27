@@ -243,3 +243,65 @@ export function computeAdditionalChargesSummary(params: {
     hasPending: totalPendingWithVat > 0.004,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Validação de lançamentos do técnico/gestão no servidor (C-11) e preço da peça (C-12).
+// ---------------------------------------------------------------------------
+
+/** Teto por lançamento de Mão de obra, Taxa extra e Adicional (€, sem IVA). Acima disso não é aceite. */
+export const LABOR_EXTRA_MAX_EUR = 2000;
+/** Teto de preço unitário de peça e de custo do fornecedor (€, sem IVA). */
+export const PART_UNIT_MAX_EUR = 5000;
+/** Quantidade máxima por linha de peça. */
+export const PART_QTY_MAX = 999;
+
+export type ParseResult<T = number> = { ok: true; value: T } | { ok: false; error: string };
+
+/** Valor monetário não negativo e não acima de `max`. Arredonda para 2 casas. */
+export function parseBoundedAmount(value: unknown, max: number, label: string): ParseResult {
+  if (value === '' || value === null || value === undefined || typeof value === 'boolean') {
+    return { ok: false, error: `${label}: valor inválido.` };
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n)) return { ok: false, error: `${label}: valor inválido.` };
+  if (n < 0) return { ok: false, error: `${label}: não pode ser negativo.` };
+  if (n > max) return { ok: false, error: `${label}: acima do máximo de € ${max.toFixed(2)}.` };
+  return { ok: true, value: round2(n) };
+}
+
+/** Quantidade de peça: número maior que zero e até PART_QTY_MAX. */
+export function parseBoundedQuantity(value: unknown, label: string): ParseResult {
+  if (value === '' || value === null || value === undefined || typeof value === 'boolean') {
+    return { ok: false, error: `${label}: quantidade inválida.` };
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return { ok: false, error: `${label}: a quantidade deve ser maior que zero.` };
+  if (n > PART_QTY_MAX) return { ok: false, error: `${label}: quantidade acima do máximo de ${PART_QTY_MAX}.` };
+  return { ok: true, value: n };
+}
+
+/**
+ * Preço da peça ao cliente (sem IVA).
+ * - Com custo conhecido: sem preço informado, aplica custo x (1 + markup). Com preço informado,
+ *   não aceita valor abaixo do custo.
+ * - Sem custo conhecido (técnico sem acesso ao custo): não há piso possível; aceita o preço informado.
+ * `markupPct` é o parâmetro 'parts_markup_pct' (percentagem, padrão 15).
+ */
+export function resolvePartSalePrice(params: {
+  supplierUnitCost: number;
+  requestedPrice: number | null;
+  markupPct: number;
+}): ParseResult {
+  const cost = round2(Math.max(0, Number(params.supplierUnitCost) || 0));
+  const markup = Math.max(0, Number(params.markupPct) || 0) / 100;
+  const requested = params.requestedPrice === null ? null : round2(Number(params.requestedPrice));
+
+  if (cost > 0) {
+    if (requested === null) return { ok: true, value: round2(cost * (1 + markup)) };
+    if (requested < cost) {
+      return { ok: false, error: `Preço da peça (€ ${requested.toFixed(2)}) abaixo do custo (€ ${cost.toFixed(2)}).` };
+    }
+    return { ok: true, value: requested };
+  }
+  return { ok: true, value: requested ?? 0 };
+}

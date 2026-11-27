@@ -7,7 +7,7 @@ export function RegisterPage() {
   const { register } = useAuth();
   const navigate = useNavigate();
 
-  const [role, setRole] = useState<'customer' | 'technician' | 'company_admin' | 'partner_requester'>('customer');
+  const [role, setRole] = useState<'customer' | 'technician'>('customer');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -17,7 +17,6 @@ export function RegisterPage() {
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('Lisboa');
   const [postalCode, setPostalCode] = useState('');
-  const [organizationName, setOrganizationName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -37,8 +36,6 @@ export function RegisterPage() {
         address,
         city,
         postalCode,
-        organizationName:
-          role === 'company_admin' || role === 'partner_requester' ? organizationName : undefined,
       });
       navigate(ROLE_HOME_ROUTES[user.role]);
     } catch (err: any) {
@@ -57,7 +54,7 @@ export function RegisterPage() {
               Criar Conta · Confiança Repara
             </h1>
             <p className="mt-1 text-sm text-slate-600">
-              Registo atómico com dados fiscais (NIF / IBAN) e vinculação imediata ao portal.
+              Registo de cliente ou técnico. Centros técnicos e parceiros entram por convite ou aprovação da gestão.
             </p>
           </div>
           <Link
@@ -85,8 +82,6 @@ export function RegisterPage() {
                 [
                   { id: 'customer', label: 'Cliente Final' },
                   { id: 'technician', label: 'Técnico' },
-                  { id: 'partner_requester', label: 'Parceiro B2B' },
-                  { id: 'company_admin', label: 'Centro Técnico' },
                 ] as const
               ).map((item) => (
                 <button
@@ -176,22 +171,6 @@ export function RegisterPage() {
                   onChange={(e) => setIban(e.target.value)}
                   placeholder="PT50 ..."
                   className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono"
-                />
-              </div>
-            )}
-
-            {(role === 'company_admin' || role === 'partner_requester') && (
-              <div>
-                <label className="block text-xs font-medium text-slate-700">
-                  Nome da Empresa
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={organizationName}
-                  onChange={(e) => setOrganizationName(e.target.value)}
-                  placeholder="Ex: Gestão Imobiliária Lisboa Lda"
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                 />
               </div>
             )}

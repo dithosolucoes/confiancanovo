@@ -147,11 +147,13 @@ export function registerPessoasRoutes(app: express.Express, ctx: PessoasRouteCon
     }
     const id = `user-tech-${crypto.randomUUID().slice(0, 6)}`;
     const orgId = user.role === 'company_admin' ? user.organization_id : (organization_id || 'org-matrix');
-    const passHash = hashPassword('Confianca2026!');
+    // C-06: senha inicial aleatória, mostrada uma única vez a quem criou; o técnico troca no primeiro acesso
+    const tempPassword = crypto.randomBytes(9).toString('base64url');
+    const passHash = hashPassword(tempPassword);
 
     db.prepare(`
-      INSERT INTO profiles (id, organization_id, role, full_name, email, password_hash, phone, nif, iban, emergency_contact, custom_payout_percentage, is_active)
-      VALUES (?, ?, 'technician', ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      INSERT INTO profiles (id, organization_id, role, full_name, email, password_hash, phone, nif, iban, emergency_contact, custom_payout_percentage, is_active, must_change_password)
+      VALUES (?, ?, 'technician', ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
     `).run(
       id,
       orgId,
@@ -166,7 +168,7 @@ export function registerPessoasRoutes(app: express.Express, ctx: PessoasRouteCon
         ? Number(custom_payout_percentage)
         : null
     );
-    res.status(201).json({ technician: getProfilePayload(id) });
+    res.status(201).json({ technician: getProfilePayload(id), temporary_password: tempPassword });
   });
 
   app.patch('/api/technicians/:id', requireAuth(['super_admin', 'company_admin']), (req, res) => {

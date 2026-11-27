@@ -37,14 +37,15 @@ export function settleOrderPayment(
       return; // Idempotent guard against duplicate webhook deliveries
     }
 
+    // Só liquida ordem ativa (não cancelada) com orçamento aprovado; caso contrário o pagamento fica pendente
+    const order = db.prepare('SELECT * FROM service_orders WHERE id = ?').get(orderId) as any;
+    if (!order || order.status === 'cancelled' || order.quote_status !== 'accepted') return;
+
     newlySettled = true;
     db.prepare(`
       UPDATE payments SET status = 'paid', stripe_payment_intent_id = ?, paid_at = datetime('now')
       WHERE stripe_session_id = ?
     `).run(paymentIntentId || `pi_${crypto.randomUUID().slice(0, 10)}`, sessionId);
-
-    const order = db.prepare('SELECT * FROM service_orders WHERE id = ?').get(orderId) as any;
-    if (!order) return;
 
     db.prepare(`
       INSERT INTO cash_flow_entries (id, entry_type, category, description, amount, paid_amount, status, due_date, paid_at, service_order_id)
@@ -73,7 +74,6 @@ export function settleOrderPayment(
           quote_paid = 1,
           labor_paid_at = COALESCE(labor_paid_at, datetime('now')),
           materials_paid_at = COALESCE(materials_paid_at, datetime('now')),
-          quote_status = COALESCE(quote_status, 'accepted'),
           status = CASE WHEN status = 'payment_pending' THEN 'completed' ELSE status END,
           completed_at = CASE WHEN status = 'payment_pending' AND completed_at IS NULL THEN datetime('now') ELSE completed_at END,
           updated_at = datetime('now')

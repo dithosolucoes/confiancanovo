@@ -55,6 +55,10 @@ export function registerPagamentosRoutes(app: express.Express, ctx: PagamentosRo
       .get(serviceOrderId) as any;
     if (!order) return res.status(404).json({ error: 'Ordem não encontrada.' });
     if (!canUserAccessOrder(user, order)) return res.status(403).json({ error: 'Sem permissão.' });
+    if (order.status === 'cancelled') return res.status(400).json({ error: 'Esta ordem está cancelada.' });
+    if (order.quote_status !== 'accepted') {
+      return res.status(400).json({ error: 'Só é possível pagar depois de o orçamento ser aprovado.' });
+    }
 
     const items = db
       .prepare('SELECT quantity, customer_unit_price, supplier_unit_cost FROM service_order_items WHERE service_order_id = ?')
@@ -178,6 +182,9 @@ export function registerPagamentosRoutes(app: express.Express, ctx: PagamentosRo
     const order = db.prepare('SELECT * FROM service_orders WHERE id = ?').get(payment.service_order_id) as any;
     if (!order || !canUserAccessOrder(user, order)) {
       return res.status(403).json({ error: 'Sem permissão.' });
+    }
+    if (order.status === 'cancelled' || order.quote_status !== 'accepted') {
+      return res.status(400).json({ error: 'Só é possível confirmar pagamento de ordem ativa com orçamento aprovado.' });
     }
     settle(order.id, sessionId, payment.payment_type, Number(payment.amount));
     res.json({ ok: true, order: projectOrderForRole(db.prepare('SELECT * FROM service_orders WHERE id = ?').get(order.id), user.role) });

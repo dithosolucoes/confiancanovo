@@ -11,6 +11,7 @@ export type ParamKey =
   | 'payout_default_pct'
   | 'mileage_rate_per_km'
   | 'berens_parts_markup'
+  | 'parts_markup_pct'
   | 'cancel_after_accept_tech_pct'
   | 'tech_sees_payouts';
 
@@ -54,6 +55,16 @@ export const PARAM_DEFS: Record<ParamKey, ParamDef> = {
     min: 1,
     max: 2,
     defaultValue: 1.3,
+  },
+  parts_markup_pct: {
+    key: 'parts_markup_pct',
+    label: 'Markup de peças (preço ao cliente sobre o custo)',
+    description:
+      'Percentagem somada ao custo da peça para o preço ao cliente, aplicada no servidor (ex.: 15 = custo x 1,15). Não é aceite preço informado abaixo do custo.',
+    unit: '%',
+    min: 0,
+    max: 100,
+    defaultValue: 15,
   },
   cancel_after_accept_tech_pct: {
     key: 'cancel_after_accept_tech_pct',
@@ -115,6 +126,7 @@ export function initBusinessParameters(db: Database.Database) {
     VALUES (?, ?, ?, 'Valor inicial do sistema', 'sistema', datetime('now'))
   `);
   insert.run('payout_default_pct', PARAM_DEFS.payout_default_pct.defaultValue, EPOCH_ISO);
+  insert.run('parts_markup_pct', PARAM_DEFS.parts_markup_pct.defaultValue, EPOCH_ISO);
   const globalRate = db
     .prepare('SELECT rate_per_km FROM mileage_settings WHERE technician_id IS NULL')
     .get() as { rate_per_km: number } | undefined;

@@ -11,6 +11,17 @@ import type { AuthUser } from '../infra/auth-session.ts';
 import type { UserRole } from '../../src/types/domain.ts';
 
 // Rotas de pedidos (fatia 16). Dependencias entram por ctx (contextoPedidos em server.ts).
+// Transições de estado que o técnico responsável pode pedir pelo PATCH (aceite, deslocação, início, conclusão)
+const TECH_STATUS_TRANSITIONS: Record<string, string[]> = {
+  pending: ['pending', 'accepted'],
+  accepted: ['accepted', 'on_the_way', 'in_progress'],
+  on_the_way: ['on_the_way', 'in_progress'],
+  in_progress: ['in_progress', 'budgeting', 'payment_pending', 'completed'],
+  budgeting: ['budgeting', 'in_progress', 'payment_pending', 'completed'],
+  payment_pending: ['payment_pending'],
+  completed: ['completed'],
+};
+
 export function registerPedidosRoutes(app: Express, ctx: any): void {
   const { requireAuth, canUserAccessOrder, projectOrderForRole, projectItemsForRole, createNotification, broadcastToOrder, broadcastToUser, recalculateOrderInDb, notifyTechnicianOfValueChange, normalizeNif, nextReferenceCode, referencePrefixFor, saveOrderPhotoFile, UPLOADS_BASE_DIR, sendTransactionalEmail } = ctx;
   app.get('/api/orders', requireAuth(), (req, res) => {
@@ -172,7 +183,7 @@ export function registerPedidosRoutes(app: Express, ctx: any): void {
 
   app.post('/api/orders', requireAuth(['super_admin', 'company_admin', 'partner_requester', 'customer']), (req, res) => {
     const user: AuthUser = (req as any).authUser;
-    const {
+    let {
       catalog_id,
       service_name,
       category,
@@ -196,11 +207,39 @@ export function registerPedidosRoutes(app: Express, ctx: any): void {
       photos,
     } = req.body ?? {};
 
+    // Cliente e parceiro não definem taxa, IVA, técnico, organizações, garantia nem regra: o servidor define tudo
+    // a partir do catálogo e dos parâmetros. Admin e empresa mantêm os seus campos.
+    const clientSide = user.role === 'customer' || user.role === 'partner_requester';
+    if (clientSide) {
+      service_fee = undefined;
+      vat_rate = undefined;
+      technician_id = undefined;
+      provider_org_id = undefined;
+      requester_org_id = undefined;
+      is_warranty = undefined;
+      legacy_parts_markup = undefined;
+    }
+
     if (!service_address || (!catalog_id && !service_name)) {
       return res.status(400).json({ error: 'Serviço e morada são obrigatórios.' });
     }
     if (req.body?.customer_nif && !normalizeNif(req.body.customer_nif)) {
       return res.status(400).json({ error: 'NIF inválido. Use 9 dígitos.' });
+    }
+
+    // Técnico preferido (cliente): só se existir e estiver ativo; não atribui, apenas regista a preferência
+    const prefTechId: string | null = preferred_technician_id
+      ? clientSide
+        ? ((db.prepare("SELECT id FROM profiles WHERE id = ? AND role = 'technician' AND is_active = 1").get(preferred_technician_id) as any)?.id ?? null)
+        : preferred_technician_id
+      : null;
+
+    // Admin/empresa: técnico atribuído tem de existir e, para empresa, pertencer à própria organização
+    if (!clientSide && technician_id) {
+      const techRow = db.prepare("SELECT id, organization_id FROM profiles WHERE id = ? AND role = 'technician'").get(technician_id) as any;
+      if (!techRow || (user.role === 'company_admin' && techRow.organization_id !== user.organization_id)) {
+        return res.status(403).json({ error: 'Técnico inválido ou não pertence à sua empresa.' });
+      }
     }
 
     const rateRows = db.prepare('SELECT code, amount FROM payout_rate_settings').all() as Array<{
@@ -250,7 +289,7 @@ export function registerPedidosRoutes(app: Express, ctx: any): void {
         ? user.organization_id!
         : provider_org_id || 'org-matrix';
 
-    const finalTechId = technician_id || preferred_technician_id || null;
+    const finalTechId = clientSide ? null : technician_id || preferred_technician_id || null;
     const initialStatus = finalTechId ? 'accepted' : 'pending';
 
     db.prepare(`
@@ -274,7 +313,7 @@ export function registerPedidosRoutes(app: Express, ctx: any): void {
       finalRequesterOrg,
       finalProviderOrg,
       finalTechId,
-      preferred_technician_id || null,
+      clientSide ? prefTechId : preferred_technician_id || null,
       service_address.trim(),
       address_complement ? String(address_complement).trim() : null,
       postal_code ? String(postal_code).trim() : null,
@@ -318,10 +357,11 @@ export function registerPedidosRoutes(app: Express, ctx: any): void {
 
     const updated = recalculateOrderInDb(id);
 
-    if (finalTechId) {
+    const notifyTechId = finalTechId || prefTechId;
+    if (notifyTechId) {
       createNotification(
-        finalTechId,
-        preferred_technician_id
+        notifyTechId,
+        prefTechId
           ? `★ Pedido "Mesmo Técnico" (${referenceCode})`
           : `Novo serviço atribuído (${referenceCode})`,
         `${resolvedName} em ${service_address}.`,
@@ -382,6 +422,16 @@ export function registerPedidosRoutes(app: Express, ctx: any): void {
       }
 
       const nextStatus = body.status || existing.status;
+
+      // Sem técnico atribuído, o único caminho é o aceite de uma OS pendente (com as validações do perfil abaixo)
+      if (!existing.technician_id && (existing.status !== 'pending' || nextStatus !== 'accepted')) {
+        return res.status(400).json({ error: 'Esta ordem não tem técnico. Aceite-a no mural para a atribuir.' });
+      }
+      // Só transições permitidas para o técnico responsável
+      const allowedNext = TECH_STATUS_TRANSITIONS[existing.status] ?? [];
+      if (!allowedNext.includes(nextStatus)) {
+        return res.status(400).json({ error: 'Transição de estado não permitida para o técnico.' });
+      }
 
       if (nextStatus === 'accepted' && (!existing.technician_id || existing.status === 'pending')) {
         const techProfile = db

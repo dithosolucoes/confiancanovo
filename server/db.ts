@@ -353,6 +353,9 @@ export function initDatabase() {
   ensureOrderColumn('quote_decided_at', 'TEXT');
   // NIF do cliente para faturação e tipo de aparelho (lista editável pelo gestor)
   ensureOrderColumn('customer_nif', 'TEXT');
+  // M.O. e taxa extra lançadas pelo técnico, pendentes de aprovação do gestor (fora de labor_cost/extra_fee até aprovar)
+  ensureOrderColumn('pending_labor_cost', 'REAL');
+  ensureOrderColumn('pending_extra_fee', 'REAL');
   ensureOrderColumn('appliance_type', 'TEXT');
   // Id do documento na TOConline (fatura oficial)
   ensureOrderColumn('toc_document_id', 'TEXT');
@@ -433,6 +436,8 @@ export function initDatabase() {
   ensureProfileColumn('billing_name', 'TEXT');
   ensureProfileColumn('billing_nif', 'TEXT');
   ensureProfileColumn('billing_address', 'TEXT');
+  // Técnico criado por gestão/empresa com senha aleatória: troca obrigatória no primeiro acesso (contas antigas ficam 0)
+  ensureProfileColumn('must_change_password', 'INTEGER NOT NULL DEFAULT 0');
 
   const subCols = (db.prepare('PRAGMA table_info(service_subscriptions)').all() as Array<{ name: string }>).map(
     (c) => c.name
@@ -510,8 +515,8 @@ export function initDatabase() {
 
   const orgCount = (db.prepare('SELECT COUNT(*) as cnt FROM organizations').get() as { cnt: number }).cnt;
   if (orgCount === 0) {
-    // Dados e contas de demonstração só fora de produção, ou com SEED_DEMO=1 por decisão explícita.
-    if (process.env.NODE_ENV !== 'production' || process.env.SEED_DEMO === '1') {
+    // Dados e contas de demonstração (senha fixa) só com ALLOW_TEST_SHORTCUTS=1 explícito; NODE_ENV não basta.
+    if (process.env.ALLOW_TEST_SHORTCUTS === '1') {
       seedInitialData();
     } else {
       bootstrapFirstAdmin();

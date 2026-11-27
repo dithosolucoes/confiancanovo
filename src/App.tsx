@@ -9,6 +9,7 @@ const LoginPage = lazy(() => import('./pages/auth/LoginPage').then((m) => ({ def
 const RegisterPage = lazy(() => import('./pages/auth/RegisterPage').then((m) => ({ default: m.RegisterPage })));
 const ForgotPasswordPage = lazy(() => import('./pages/auth/ForgotPasswordPage').then((m) => ({ default: m.ForgotPasswordPage })));
 const ResetPasswordPage = lazy(() => import('./pages/auth/ResetPasswordPage').then((m) => ({ default: m.ResetPasswordPage })));
+const ChangePasswordPage = lazy(() => import('./pages/auth/ChangePasswordPage').then((m) => ({ default: m.ChangePasswordPage })));
 
 const AdminDashboardPage = lazy(() => import('./pages/admin/AdminDashboardPage').then((m) => ({ default: m.AdminDashboardPage })));
 const AdminOrdersPage = lazy(() => import('./pages/admin/AdminOrdersPage').then((m) => ({ default: m.AdminOrdersPage })));
@@ -138,6 +139,7 @@ export default function App() {
               </PublicOnlyRoute>
             }
           />
+          <Route path="/trocar-senha" element={<ChangePasswordPage />} />
 
           {/* 1. PORTAL SUPER ADMIN */}
           <Route

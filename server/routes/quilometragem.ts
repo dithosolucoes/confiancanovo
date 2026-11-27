@@ -140,9 +140,16 @@ export function registerQuilometragemRoutes(app: express.Express, ctx: Quilometr
 
     if (action === 'on_the_way') {
       targetOrder = db
-        .prepare('SELECT id, reference_code, customer_id, service_address, service_lat, service_lng FROM service_orders WHERE id = ?')
+        .prepare('SELECT id, reference_code, customer_id, service_address, service_lat, service_lng, technician_id, status FROM service_orders WHERE id = ? AND deleted_at IS NULL')
         .get(serviceOrderId) as any;
       if (!targetOrder) return res.status(404).json({ error: 'Ordem não encontrada.' });
+      // Só a OS atribuída ao técnico (super_admin mantém acesso total) e só nos estados em que a deslocação faz sentido
+      if (user.role !== 'super_admin' && targetOrder.technician_id !== user.id) {
+        return res.status(403).json({ error: 'Sem permissão.' });
+      }
+      if (!['accepted', 'on_the_way'].includes(targetOrder.status)) {
+        return res.status(400).json({ error: 'Estado da ordem não permite registar deslocação.' });
+      }
       destinationAddress = targetOrder.service_address;
       destCoords =
         targetOrder.service_lat && targetOrder.service_lng

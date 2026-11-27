@@ -18,6 +18,10 @@ import {
 
 type Db = typeof import('../db.ts').db;
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
+}
+
 type RequireAuth = (allowedRoles?: UserRole[]) => express.RequestHandler;
 
 export interface AuthRouteContext {
@@ -39,6 +43,22 @@ export interface AuthRouteContext {
 export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) {
   const { db, requireAuth, hashPassword, verifyPassword, getProfilePayload, createNotification, sendTransactionalEmail } = ctx;
 
+  // C-06: técnico com must_change_password=1 só acede a sessão (/api/auth/*) e à troca de senha até trocar.
+  // Registado antes de todas as rotas /api de server.ts (que vêm depois de registerAuthRoutes).
+  app.use('/api', (req, res, next) => {
+    if (req.path.startsWith('/auth/') || req.path === '/profile/change-password') return next();
+    const auth = getAuthenticatedUser(req);
+    if (!auth) return next();
+    const flag = db.prepare('SELECT must_change_password FROM profiles WHERE id = ?').get(auth.user.id) as any;
+    if (flag && flag.must_change_password) {
+      return res.status(403).json({
+        error: 'Troque a palavra-passe inicial antes de continuar.',
+        must_change_password: true,
+      });
+    }
+    return next();
+  });
+
   // AUTH ROUTES
   app.post('/api/auth/login', (req, res) => {
     const { email, password } = req.body ?? {};
@@ -56,7 +76,7 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
     }
 
     const row = db
-      .prepare('SELECT id, password_hash, is_active FROM profiles WHERE lower(email) = lower(?)')
+      .prepare('SELECT id, password_hash, is_active, must_change_password FROM profiles WHERE lower(email) = lower(?)')
       .get(String(email).trim()) as any;
 
     if (!row || !verifyPassword(String(password), row.password_hash)) {
@@ -72,7 +92,9 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
     }
     loginAttempts.delete(attemptKey);
     if (!row.is_active) {
-      return res.status(403).json({ error: 'Conta desativada pelo administrador.' });
+      return res.status(403).json({
+        error: 'Conta inativa. Se é técnico recém-cadastrado, aguarde a aprovação da gestão.',
+      });
     }
 
     const token = signToken({
@@ -83,14 +105,13 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
 
     return res.json({
       token,
-      user: getProfilePayload(row.id),
+      user: { ...getProfilePayload(row.id), must_change_password: Boolean(row.must_change_password) },
     });
   });
 
-  // Preview convenience switcher for the 5 seeded demo roles
+  // Preview convenience switcher for the 5 seeded demo roles (sem senha: só com ALLOW_TEST_SHORTCUTS=1 explícito)
   app.post('/api/auth/demo-login', (req, res) => {
-    // Sem senha: em produção este atalho fica desligado (senão qualquer pessoa entra como super admin)
-    if (process.env.NODE_ENV === 'production') {
+    if (process.env.ALLOW_TEST_SHORTCUTS !== '1') {
       return res.status(404).json({ error: 'Não encontrado.' });
     }
     const { userId } = req.body ?? {};
@@ -124,7 +145,6 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
       city,
       postalCode,
       role,
-      organizationName,
     } = req.body ?? {};
 
     if (!email || !password || !fullName) {
@@ -134,15 +154,18 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
       return res.status(400).json({ error: 'A palavra-passe deve ter pelo menos 6 caracteres.' });
     }
 
-    const allowedRegisterRoles: UserRole[] = [
-      'customer',
-      'technician',
-      'company_admin',
-      'partner_requester',
-    ];
+    // C-03: cadastro público só cria cliente ou técnico. Centro técnico e parceiro entram por convite ou aprovação.
+    if (role === 'company_admin' || role === 'partner_requester') {
+      return res.status(403).json({
+        error: 'Cadastro de centro técnico ou parceiro é feito por convite ou aprovação da gestão.',
+      });
+    }
+    const allowedRegisterRoles: UserRole[] = ['customer', 'technician'];
     const targetRole: UserRole = allowedRegisterRoles.includes(role)
       ? role
       : 'customer';
+    // C-03: técnico público entra inativo até a gestão aprovar
+    const isPendingTechnician = targetRole === 'technician';
 
     const existing = db
       .prepare('SELECT id FROM profiles WHERE lower(email) = lower(?)')
@@ -157,29 +180,13 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
     const registerTx = db.transaction(() => {
       let orgId: string | null = null;
 
-      if (targetRole === 'company_admin' || targetRole === 'partner_requester') {
-        orgId = `org-${crypto.randomUUID().slice(0, 8)}`;
-        const orgType =
-          targetRole === 'company_admin' ? 'technical_center' : 'partner_client';
-        db.prepare(`
-          INSERT INTO organizations (id, name, nif, org_type, email, phone, address, custom_payout_percentage, is_active)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 50.0, 1)
-        `).run(
-          orgId,
-          organizationName?.trim() || `${fullName.trim()} Lda`,
-          nif || null,
-          orgType,
-          String(email).trim().toLowerCase(),
-          phone || null,
-          address || null
-        );
-      } else if (targetRole === 'technician') {
+      if (targetRole === 'technician') {
         orgId = 'org-matrix';
       }
 
       db.prepare(`
         INSERT INTO profiles (id, organization_id, role, full_name, email, password_hash, phone, nif, iban, address, city, postal_code, is_active)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         userId,
         orgId,
@@ -192,7 +199,8 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
         iban || null,
         address || null,
         city || null,
-        postalCode || null
+        postalCode || null,
+        isPendingTechnician ? 0 : 1
       );
 
       createNotification(
@@ -204,6 +212,20 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
     });
 
     registerTx();
+
+    if (isPendingTechnician) {
+      void sendTransactionalEmail({
+        to: String(email).trim().toLowerCase(),
+        recipientUserId: userId,
+        template: 'welcome',
+        subject: 'Bem-vindo à Confiança Repara — Cadastro recebido',
+        html: `<h2>Olá ${String(fullName).trim()},</h2><p>Recebemos o seu cadastro de técnico. A conta fica ativa depois da aprovação da gestão.</p>`,
+      });
+      return res.status(403).json({
+        error: 'Cadastro recebido. A conta de técnico fica pendente até a gestão aprovar; ainda não é possível entrar.',
+        pending_approval: true,
+      });
+    }
 
     void sendTransactionalEmail({
       to: String(email).trim().toLowerCase(),
@@ -270,10 +292,24 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
       'email'
     );
 
+    // C-05: o token só sai por e-mail (com chave de envio configurada).
+    // Sem chave, só aparece no log do servidor e apenas com ALLOW_TEST_SHORTCUTS=1.
+    if (process.env.RESEND_API_KEY?.trim()) {
+      void sendTransactionalEmail({
+        to: target.email,
+        recipientUserId: target.id,
+        template: 'password_reset',
+        subject: 'Confiança Repara — Redefinição de palavra-passe',
+        html: `<p>Olá ${escapeHtml(target.full_name)},</p><p>Use este código para redefinir a sua palavra-passe (válido 30 minutos):</p><p><strong>${rawToken}</strong></p><p>Se não foi você, ignore este e-mail.</p>`,
+      });
+    } else if (process.env.ALLOW_TEST_SHORTCUTS === '1') {
+      console.info(`[ALLOW_TEST_SHORTCUTS] token de redefinição gerado para o utilizador ${target.id}: ${rawToken}`);
+    }
+
+    // Mesma resposta exista ou não a conta (B-09)
     return res.json({
       ok: true,
-      message: 'Instruções de recuperação geradas com sucesso.',
-      previewResetToken: process.env.NODE_ENV !== 'production' ? rawToken : undefined,
+      message: 'Se o e-mail existir, enviámos instruções de recuperação.',
     });
   });
 
@@ -299,7 +335,7 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
 
     const newHash = hashPassword(String(newPassword));
     const tx = db.transaction(() => {
-      db.prepare("UPDATE profiles SET password_hash = ?, updated_at = datetime('now') WHERE id = ?").run(
+      db.prepare("UPDATE profiles SET password_hash = ?, must_change_password = 0, updated_at = datetime('now') WHERE id = ?").run(
         newHash,
         row.user_id
       );
@@ -400,7 +436,7 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
     if (!row || !verifyPassword(String(currentPassword), row.password_hash)) {
       return res.status(401).json({ error: 'Palavra-passe atual incorreta.' });
     }
-    db.prepare("UPDATE profiles SET password_hash = ?, updated_at = datetime('now') WHERE id = ?").run(
+    db.prepare("UPDATE profiles SET password_hash = ?, must_change_password = 0, updated_at = datetime('now') WHERE id = ?").run(
       hashPassword(String(newPassword)),
       user.id
     );
