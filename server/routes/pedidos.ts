@@ -497,6 +497,10 @@ export function registerPedidosRoutes(app: Express, ctx: any): void {
           error: 'Apenas ordens pendentes podem ser editadas ou canceladas.',
         });
       }
+      // Cliente e parceiro só podem cancelar; outro status é recusado de forma explícita
+      if (body.status !== undefined && body.status !== existing.status && body.status !== 'cancelled') {
+        return res.status(400).json({ error: 'Cliente e parceiro só podem cancelar a ordem.' });
+      }
       const nextStatus = body.status === 'cancelled' ? 'cancelled' : existing.status;
       db.prepare(`
         UPDATE service_orders SET
