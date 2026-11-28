@@ -46,8 +46,10 @@ export function CustomerBookPage() {
   const [customerNif, setCustomerNif] = useState('');
   const [description, setDescription] = useState('');
   const [preferredTechId, setPreferredTechId] = useState('');
-  // Cobrança só com escolha explícita da cliente (B2: antes vinha marcada por padrão)
-  const [payInitialNow, setPayInitialNow] = useState(false);
+  // Taxa de deslocação vem marcada por padrão (A-12); exige confirmação do valor com IVA
+  const [payInitialNow, setPayInitialNow] = useState(true);
+  // Id do serviço cujo valor com IVA a cliente confirmou (reseta ao trocar de serviço)
+  const [visitFeeAckServiceId, setVisitFeeAckServiceId] = useState<string | null>(null);
   const [photos, setPhotos] = useState<InitialPhoto[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,6 +97,15 @@ export function CustomerBookPage() {
 
   const selectedService = regularCatalog.find((c) => c.id === catalogId) || filteredCatalog[0];
 
+  // Valor da taxa de deslocação com IVA (mostrado ao cliente antes de confirmar)
+  const visitFeeNet = Number(selectedService?.base_service_fee ?? 0);
+  const visitVatRate = Number(selectedService?.default_vat_rate ?? 0);
+  const visitFeeGross = Math.round(visitFeeNet * (1 + visitVatRate / 100) * 100) / 100;
+  const visitFeeAcknowledged =
+    !!selectedService && visitFeeAckServiceId === selectedService.id;
+  // Garantia: prazo real do servidor (15 dias a partir da conclusão)
+  const WARRANTY_DAYS = 15;
+
   async function handlePhotoFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []).slice(0, 4 - photos.length);
     e.target.value = '';
@@ -117,6 +128,12 @@ export function CustomerBookPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (payInitialNow && !visitFeeAcknowledged) {
+      setError(
+        `Confirme a taxa de deslocação de ${formatEUR(visitFeeGross)} (com IVA ${visitVatRate}%) antes de agendar.`
+      );
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -301,7 +318,7 @@ export function CustomerBookPage() {
                   </span>
                   <span className="inline-flex items-center gap-1 font-medium text-emerald-700">
                     <ShieldCheck className="h-3.5 w-3.5" />
-                    Garantia {selectedService.warranty_months || 6} meses · 24h/7d
+                    Garantia de {WARRANTY_DAYS} dias a partir da conclusão · 24h/7d
                   </span>
                 </div>
               )}
@@ -457,6 +474,29 @@ export function CustomerBookPage() {
                 </label>
               </div>
 
+              {payInitialNow && selectedService && (
+                <div className="sm:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                  <div className="text-xs text-slate-700">
+                    Taxa de deslocação: <strong>{formatEUR(visitFeeNet)}</strong> + IVA (
+                    {visitVatRate}%) = <strong className="tabular-nums">{formatEUR(visitFeeGross)}</strong>
+                  </div>
+                  <label className="flex items-start gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={visitFeeAcknowledged}
+                      onChange={(e) =>
+                        setVisitFeeAckServiceId(e.target.checked ? selectedService.id : null)
+                      }
+                      className="mt-0.5 rounded border-slate-300"
+                    />
+                    <span>
+                      Confirmo a taxa de deslocação de {formatEUR(visitFeeGross)} (com IVA{' '}
+                      {visitVatRate}%).
+                    </span>
+                  </label>
+                </div>
+              )}
+
               <div className="sm:col-span-2">
                 <label className="block text-xs font-medium text-slate-700">
                   Descrição da Avaria
@@ -520,7 +560,7 @@ export function CustomerBookPage() {
             <div className="flex justify-end border-t border-slate-100 pt-4">
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submitting || (payInitialNow && !visitFeeAcknowledged)}
                 className="rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
               >
                 {submitting

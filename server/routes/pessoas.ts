@@ -2,6 +2,14 @@ import type express from 'express';
 import crypto from 'node:crypto';
 import type { UserRole } from '../../src/types/domain.ts';
 import { getParamAt } from '../params.ts';
+import {
+  registrarAuditoriaIban,
+  valorAlterado,
+  validarCodigoPostal,
+  validarIban,
+  validarNif,
+  validarTelefone,
+} from '../infra/validacao.ts';
 
 // Administração de pessoas e organizações (organizações, técnicos, clientes e espelho do técnico),
 // movida de server.ts sem alteração de comportamento.
@@ -145,6 +153,13 @@ export function registerPessoasRoutes(app: express.Express, ctx: PessoasRouteCon
     if (existing) {
       return res.status(409).json({ error: 'Já existe um utilizador com este e-mail.' });
     }
+    // A-08: formato de NIF, IBAN e telefone (opcionais)
+    const vNif = validarNif(nif);
+    const vIban = validarIban(iban);
+    const vTelefone = validarTelefone(phone);
+    const erroFormato = [vNif, vIban, vTelefone].find((v) => v.erro)?.erro;
+    if (erroFormato) return res.status(400).json({ error: erroFormato });
+
     const id = `user-tech-${crypto.randomUUID().slice(0, 6)}`;
     const orgId = user.role === 'company_admin' ? user.organization_id : (organization_id || 'org-matrix');
     // C-06: senha inicial aleatória, mostrada uma única vez a quem criou; o técnico troca no primeiro acesso
@@ -160,9 +175,9 @@ export function registerPessoasRoutes(app: express.Express, ctx: PessoasRouteCon
       full_name.trim(),
       email.trim().toLowerCase(),
       passHash,
-      phone || null,
-      nif || null,
-      iban || null,
+      vTelefone.valor,
+      vNif.valor,
+      vIban.valor,
       emergency_contact || null,
       user.role === 'super_admin' && custom_payout_percentage !== undefined && custom_payout_percentage !== ''
         ? Number(custom_payout_percentage)
@@ -178,8 +193,12 @@ export function registerPessoasRoutes(app: express.Express, ctx: PessoasRouteCon
     if (user.role === 'company_admin' && target.organization_id !== user.organization_id) {
       return res.status(403).json({ error: 'Sem permissão para editar técnico de outra empresa.' });
     }
+    // A-16: admin de empresa só altera perfis de técnico da própria organização
+    if (user.role === 'company_admin' && target.role !== 'technician') {
+      return res.status(403).json({ error: 'Sem permissão: só é possível alterar perfis de técnico.' });
+    }
 
-    const {
+    let {
       full_name,
       phone,
       nif,
@@ -191,6 +210,26 @@ export function registerPessoasRoutes(app: express.Express, ctx: PessoasRouteCon
       is_active,
       mileage_enabled,
     } = req.body ?? {};
+
+    // A-16: admin de empresa altera só IBAN, NIF, ativo e mileage; os restantes campos ficam como estão
+    if (user.role === 'company_admin') {
+      full_name = undefined;
+      phone = undefined;
+      emergency_contact = undefined;
+      is_paused = undefined;
+      custom_payout_percentage = undefined;
+    }
+
+    // A-08: só valida o que mudou, para não bloquear edições de dados antigos sem formato válido
+    const checado = (novo: unknown, atual: unknown, validar: (r: unknown) => { valor: string | null; erro?: string }) =>
+      novo === undefined || !valorAlterado(novo, atual)
+        ? { valor: undefined as string | null | undefined, erro: undefined as string | undefined }
+        : validar(novo);
+    const pTelefone = checado(phone, target.phone, validarTelefone);
+    const pNif = checado(nif, target.nif, validarNif);
+    const pIban = checado(iban, target.iban, validarIban);
+    const erroFormato = [pTelefone, pNif, pIban].find((v) => v.erro)?.erro;
+    if (erroFormato) return res.status(400).json({ error: erroFormato });
 
     db.prepare(`
       UPDATE profiles SET
@@ -208,9 +247,9 @@ export function registerPessoasRoutes(app: express.Express, ctx: PessoasRouteCon
       WHERE id = ?
     `).run(
       full_name !== undefined && String(full_name).trim() ? String(full_name).trim() : null,
-      phone !== undefined ? (phone || null) : target.phone,
-      nif !== undefined ? (nif || null) : target.nif,
-      iban !== undefined ? (iban || null) : target.iban,
+      pTelefone.valor !== undefined ? pTelefone.valor : target.phone,
+      pNif.valor !== undefined ? pNif.valor : target.nif,
+      pIban.valor !== undefined ? pIban.valor : target.iban,
       emergency_contact !== undefined ? (emergency_contact || null) : target.emergency_contact,
       is_paused !== undefined ? (is_paused ? 1 : 0) : null,
       user.role === 'super_admin' ? (organization_id ?? target.organization_id) : target.organization_id,
@@ -225,6 +264,16 @@ export function registerPessoasRoutes(app: express.Express, ctx: PessoasRouteCon
       mileage_enabled !== undefined ? (mileage_enabled ? 1 : 0) : null,
       req.params.id
     );
+
+    // A-16: cada troca de IBAN fica registada (quem, quando, valor antigo mascarado)
+    if (iban !== undefined && valorAlterado(iban, target.iban)) {
+      registrarAuditoriaIban(db, {
+        profileId: req.params.id,
+        actorId: user.id,
+        actorRole: user.role,
+        ibanAntigo: target.iban,
+      });
+    }
 
     res.json({ technician: getProfilePayload(req.params.id) });
   });
@@ -272,6 +321,18 @@ export function registerPessoasRoutes(app: express.Express, ctx: PessoasRouteCon
       is_active,
     } = req.body ?? {};
 
+    // A-08: só valida o que mudou, para não bloquear edições de dados antigos sem formato válido
+    const checado = (novo: unknown, atual: unknown, validar: (r: unknown) => { valor: string | null; erro?: string }) =>
+      novo === undefined || !valorAlterado(novo, atual)
+        ? { valor: undefined as string | null | undefined, erro: undefined as string | undefined }
+        : validar(novo);
+    const pTelefone = checado(phone, target.phone, validarTelefone);
+    const pNif = checado(nif, target.nif, validarNif);
+    const pPostal = checado(postal_code, target.postal_code, validarCodigoPostal);
+    const pBillingNif = checado(billing_nif, target.billing_nif, validarNif);
+    const erroFormato = [pTelefone, pNif, pPostal, pBillingNif].find((v) => v.erro)?.erro;
+    if (erroFormato) return res.status(400).json({ error: erroFormato });
+
     db.prepare(`
       UPDATE profiles SET
         full_name = ?,
@@ -289,14 +350,14 @@ export function registerPessoasRoutes(app: express.Express, ctx: PessoasRouteCon
       WHERE id = ?
     `).run(
       full_name !== undefined && String(full_name).trim() ? String(full_name).trim() : target.full_name,
-      phone !== undefined ? (phone || null) : target.phone,
-      nif !== undefined ? (nif || null) : target.nif,
+      pTelefone.valor !== undefined ? pTelefone.valor : target.phone,
+      pNif.valor !== undefined ? pNif.valor : target.nif,
       address !== undefined ? (address || null) : target.address,
       city !== undefined ? (city || null) : target.city,
-      postal_code !== undefined ? (postal_code || null) : target.postal_code,
+      pPostal.valor !== undefined ? pPostal.valor : target.postal_code,
       is_partner !== undefined ? (is_partner ? 1 : 0) : null,
       billing_name !== undefined ? (billing_name || null) : target.billing_name,
-      billing_nif !== undefined ? (billing_nif || null) : target.billing_nif,
+      pBillingNif.valor !== undefined ? pBillingNif.valor : target.billing_nif,
       billing_address !== undefined ? (billing_address || null) : target.billing_address,
       is_active !== undefined ? (is_active ? 1 : 0) : null,
       target.id

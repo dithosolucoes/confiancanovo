@@ -53,6 +53,7 @@ const TechProfilePage = lazy(() => import('./pages/tecnico/TechProfilePage').the
 const CustomerBookPage = lazy(() => import('./pages/cliente/CustomerBookPage').then((m) => ({ default: m.CustomerBookPage })));
 const CustomerOrdersPage = lazy(() => import('./pages/cliente/CustomerOrdersPage').then((m) => ({ default: m.CustomerOrdersPage })));
 const CustomerProfilePage = lazy(() => import('./pages/cliente/CustomerProfilePage').then((m) => ({ default: m.CustomerProfilePage })));
+const PaymentReturnPage = lazy(() => import('./pages/cliente/PaymentReturnPage').then((m) => ({ default: m.PaymentReturnPage })));
 
 const OrderDetailView = lazy(() => import('./features/orders/OrderDetailView').then((m) => ({ default: m.OrderDetailView })));
 
@@ -523,6 +524,15 @@ export default function App() {
             element={
               <RoleGuard allowedRole="customer">
                 <CustomerProfilePage />
+              </RoleGuard>
+            }
+          />
+
+          <Route
+            path="/pagamento/retorno"
+            element={
+              <RoleGuard allowedRole="customer">
+                <PaymentReturnPage />
               </RoleGuard>
             }
           />

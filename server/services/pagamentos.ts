@@ -41,6 +41,20 @@ export function settleOrderPayment(
     const order = db.prepare('SELECT * FROM service_orders WHERE id = ?').get(orderId) as any;
     if (!order || order.status === 'cancelled' || order.quote_status !== 'accepted') return;
 
+    // A-15: idempotência também sem linha em payments: mesmo payment_intent já pago, ou lançamento de caixa
+    // igual (ordem, descrição e valor) já gravado, não cria novo lançamento
+    const descricaoCaixa = `Pagamento Stripe (${paymentType}) — ${order.reference_code}`;
+    if (paymentIntentId) {
+      const jaPagoPorIntent = db
+        .prepare("SELECT 1 FROM payments WHERE stripe_payment_intent_id = ? AND status = 'paid'")
+        .get(paymentIntentId);
+      if (jaPagoPorIntent) return;
+    }
+    const jaLancado = db
+      .prepare("SELECT 1 FROM cash_flow_entries WHERE service_order_id = ? AND description = ? AND amount = ? AND status = 'paid'")
+      .get(orderId, descricaoCaixa, amountPaid);
+    if (jaLancado) return;
+
     newlySettled = true;
     db.prepare(`
       UPDATE payments SET status = 'paid', stripe_payment_intent_id = ?, paid_at = datetime('now')
@@ -52,7 +66,7 @@ export function settleOrderPayment(
       VALUES (?, 'income', 'service_revenue', ?, ?, ?, 'paid', date('now'), datetime('now'), ?)
     `).run(
       `cf-${crypto.randomUUID().slice(0, 8)}`,
-      `Pagamento Stripe (${paymentType}) — ${order.reference_code}`,
+      descricaoCaixa,
       amountPaid,
       amountPaid,
       orderId

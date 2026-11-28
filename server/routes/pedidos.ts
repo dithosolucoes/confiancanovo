@@ -270,6 +270,15 @@ export function registerPedidosRoutes(app: Express, ctx: any): void {
       else if (norm.includes('esquentador')) resolvedFee = rateMap.get('ESQ_REP') ?? 85;
     }
 
+    // A-12: taxa de deslocação (visita) nunca zero, salvo em garantia. O cliente não define o valor:
+    // usa o do catálogo ou o parâmetro WO.
+    if (!(resolvedFee > 0) && !is_warranty) {
+      if (clientSide) resolvedFee = defaultWoFee;
+      if (!(resolvedFee > 0)) {
+        return res.status(400).json({ error: 'Taxa de deslocação obrigatória: o valor não pode ser zero.' });
+      }
+    }
+
     if (!resolvedName || !String(resolvedName).trim()) {
       return res.status(400).json({ error: 'Serviço inválido ou não encontrado no catálogo.' });
     }

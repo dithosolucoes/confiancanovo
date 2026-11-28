@@ -143,8 +143,13 @@ export function registerPagamentosRoutes(app: express.Express, ctx: PagamentosRo
           service_order_id: order.id,
           payment_type: paymentType,
         },
-        success_url: `${appUrl}/${rolePath}/servicos/${order.id}?stripe_status=success`,
-        cancel_url: `${appUrl}/${rolePath}/servicos/${order.id}?stripe_status=cancelled`,
+        // Cliente volta para a tela de retorno; os demais perfis continuam na própria tela da OS
+        success_url: rolePath === 'cliente'
+          ? `${appUrl}/pagamento/retorno?stripe_status=success`
+          : `${appUrl}/${rolePath}/servicos/${order.id}?stripe_status=success`,
+        cancel_url: rolePath === 'cliente'
+          ? `${appUrl}/pagamento/retorno?stripe_status=cancelled`
+          : `${appUrl}/${rolePath}/servicos/${order.id}?stripe_status=cancelled`,
       });
       sessionId = stripeSession.id;
       checkoutUrl = stripeSession.url;

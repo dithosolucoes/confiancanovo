@@ -41,6 +41,8 @@ export function TechProfilePage() {
   const [phone, setPhone] = useState(user?.phone || '');
   const [nif, setNif] = useState(user?.nif || '');
   const [iban, setIban] = useState(user?.iban || '');
+  // A-07: confirmação dupla do IBAN (começa com o IBAN já guardado, para não bloquear quando não muda)
+  const [ibanConfirm, setIbanConfirm] = useState(user?.iban || '');
   // O IBAN e os repasses só aparecem se a gestão tiver liberado para o técnico
   const [techSees, setTechSees] = useState(true);
   useEffect(() => {
@@ -73,6 +75,8 @@ export function TechProfilePage() {
     if (techSees && !iban.trim()) missingFields.push('IBAN');
     if (!emergencyContact.trim()) missingFields.push('Contacto de Emergência');
   }
+  // A-05: com repasses ocultos o campo IBAN não aparece, mas o aceite de ordens exige IBAN; mostrar aviso em vez de bloquear em silêncio
+  const ibanEmFaltaOculto = isTech && !techSees && !iban.trim();
 
   async function handleAvatarChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -104,23 +108,31 @@ export function TechProfilePage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setSaving(true);
     setError(null);
+    // A-04: o IBAN só é enviado quando o campo está visível (senão o servidor responde 403)
+    const ibanVisivel = isTech && techSees;
+    // A-07: confirmação dupla do IBAN antes de guardar
+    if (ibanVisivel && iban.trim() !== ibanConfirm.trim()) {
+      setError('Os dois IBAN não coincidem. Digite o mesmo IBAN nos dois campos antes de guardar.');
+      return;
+    }
+    setSaving(true);
     try {
+      const payload: Record<string, unknown> = {
+        full_name: fullName,
+        phone,
+        nif,
+        emergency_contact: emergencyContact || null,
+        address,
+        city,
+        postal_code: postalCode,
+        avatar_url: avatarUrl || null,
+        is_paused: isPaused,
+      };
+      if (ibanVisivel) payload.iban = iban;
       await apiFetch('/api/profile', {
         method: 'PATCH',
-        body: JSON.stringify({
-          full_name: fullName,
-          phone,
-          nif,
-          iban,
-          emergency_contact: emergencyContact || null,
-          address,
-          city,
-          postal_code: postalCode,
-          avatar_url: avatarUrl || null,
-          is_paused: isPaused,
-        }),
+        body: JSON.stringify(payload),
       });
       await refreshUser();
       setSaved(true);
@@ -206,13 +218,25 @@ export function TechProfilePage() {
               </button>
             </div>
 
-            {missingFields.length > 0 ? (
+            {missingFields.length > 0 || ibanEmFaltaOculto ? (
               <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
                 <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 mt-0.5" />
                 <span>
-                  <strong>Cadastro incompleto:</strong> preencha{' '}
-                  <strong>{missingFields.join(', ')}</strong> abaixo para desbloquear a aceitação
-                  de novos serviços no mural.
+                  {missingFields.length > 0 && (
+                    <>
+                      <strong>Cadastro incompleto:</strong> preencha{' '}
+                      <strong>{missingFields.join(', ')}</strong> abaixo para desbloquear a aceitação
+                      de novos serviços no mural.
+                    </>
+                  )}
+                  {ibanEmFaltaOculto && (
+                    <>
+                      {missingFields.length > 0 && <br />}
+                      <strong>IBAN em falta:</strong> os repasses estão ocultos pela gestão, por isso o
+                      campo não aparece aqui. A aceitação de serviços no mural exige IBAN. Peça à gestão
+                      para liberar os repasses ou para registar o seu IBAN.
+                    </>
+                  )}
                 </span>
               </div>
             ) : (
@@ -309,6 +333,7 @@ export function TechProfilePage() {
           {isTech && (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               {techSees && (
+              <>
               <div>
                 <label className="block text-xs font-medium text-slate-700">IBAN (Repasses)</label>
                 <input
@@ -318,6 +343,23 @@ export function TechProfilePage() {
                   className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono"
                 />
               </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700">Confirmar IBAN</label>
+                <input
+                  type="text"
+                  value={ibanConfirm}
+                  onChange={(e) => setIbanConfirm(e.target.value)}
+                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm font-mono ${
+                    ibanConfirm && ibanConfirm.trim() !== iban.trim()
+                      ? 'border-rose-300'
+                      : 'border-slate-200'
+                  }`}
+                />
+                {ibanConfirm && ibanConfirm.trim() !== iban.trim() && (
+                  <p className="mt-1 text-xs text-rose-600">Os IBAN não coincidem.</p>
+                )}
+              </div>
+              </>
               )}
               <div>
                 <label className="block text-xs font-medium text-slate-700">

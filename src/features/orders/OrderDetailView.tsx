@@ -63,6 +63,22 @@ interface LaborExtraPendingFields {
   labor_extra_pending_at?: string | null;
 }
 
+// A-06: motivos que impedem concluir a OS no cliente (o servidor não exige estes campos em PATCH /api/orders/:id)
+function getCompleteBlockers(order: ServiceOrder, reportText: string, itemsCount: number): string[] {
+  const blockers: string[] = [];
+  const hasPhoto = (order.photos?.length ?? 0) > 0;
+  const hasReport = reportText.trim().length > 0;
+  if (!hasPhoto && !hasReport) {
+    blockers.push('Adicione pelo menos uma foto da intervenção ou preencha o relatório técnico.');
+  }
+  if (order.quote_status === 'sent') {
+    blockers.push('O orçamento aguarda aprovação do cliente.');
+  } else if (order.quote_status === null && itemsCount > 0) {
+    blockers.push('Há itens de orçamento não enviados. Envie o orçamento ao cliente e aguarde a aprovação.');
+  }
+  return blockers;
+}
+
 function formatExecutionDuration(start?: string | null, end?: string | null): string | null {
   if (!start || !end) return null;
   const s = new Date(start).getTime();
@@ -167,7 +183,7 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
 
   // Confirmations & Prompts
   const [confirmAction, setConfirmAction] = useState<
-    null | 'soft_delete' | 'reject_quote' | 'cancel_pending' | 'release_order'
+    null | 'soft_delete' | 'reject_quote' | 'cancel_order' | 'release_order'
   >(null);
   const [gpsPrompt, setGpsPrompt] = useState<{
     open: boolean;
@@ -393,26 +409,6 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
     }
   }
 
-  async function handlePartnerCancel() {
-    if (!order) return;
-    setSaving(true);
-    setActionError(null);
-    try {
-      await apiFetch(`/api/orders/${order.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'cancelled' }),
-      });
-      setConfirmAction(null);
-      await loadOrder();
-      notify('Pedido cancelado com sucesso.');
-    } catch (err: any) {
-      setConfirmAction(null);
-      setActionError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
   async function handleReleaseOrder() {
     if (!order) return;
     setSaving(true);
@@ -452,13 +448,14 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
     }
   }
 
+  // A-11: único endpoint de cancelamento (confirmado no ConfirmDialog)
   async function handleCancelOrder() {
     if (!order) return;
-    if (!window.confirm(`Cancelar a ordem ${order.reference_code}? Esta ação não pode ser desfeita.`)) return;
     setSaving(true);
     setActionError(null);
     try {
       const res = await apiFetch<{ technicianPayout: number }>(`/api/orders/${order.id}/cancel`, { method: 'POST', body: '{}' });
+      setConfirmAction(null);
       await loadOrder();
       notify(
         res.technicianPayout > 0
@@ -466,6 +463,7 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
           : 'Ordem cancelada.'
       );
     } catch (err: any) {
+      setConfirmAction(null);
       setActionError(err.message);
     } finally {
       setSaving(false);
@@ -710,6 +708,13 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
 
   async function handleTechStep(action: 'accept' | 'on_the_way' | 'arrived' | 'complete') {
     if (!order) return;
+    if (action === 'complete') {
+      const blockers = getCompleteBlockers(order, reportText, items.length);
+      if (blockers.length > 0) {
+        setActionError(`Não é possível concluir: ${blockers.join(' ')}`);
+        return;
+      }
+    }
     setSaving(true);
     setActionError(null);
     try {
@@ -941,6 +946,11 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
   const selectedOrg = organizations.find((o) => o.id === providerOrgId);
   const effectivePct =
     selectedTech?.effective_payout_percentage ?? selectedOrg?.custom_payout_percentage ?? 50;
+  // A-01: percentual exibido só quando o técnico é conhecido (nunca 50% inventado)
+  const shownPayoutPct: number | null =
+    user?.role === 'technician'
+      ? (user.effective_payout_percentage ?? null)
+      : (selectedTech?.effective_payout_percentage ?? null);
 
   const liveCalc = calculateServiceFinancials({
     serviceFee,
@@ -1013,6 +1023,21 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
   const canEditCore = isAdmin || (isCustomerOrPartner && order.status === 'pending');
   const executionDuration = formatExecutionDuration(order.tech_arrived_at, order.completed_at);
 
+  // A-11: estados em que o servidor recusa o cancelamento do cliente/parceiro
+  const CLIENT_CANCEL_STATUSES = ['pending', 'accepted'];
+  const canCancelOrder =
+    !isTech &&
+    order.status !== 'completed' &&
+    order.status !== 'cancelled' &&
+    (!isCustomerOrPartner || CLIENT_CANCEL_STATUSES.includes(order.status));
+  const cancelBlockedNotice =
+    isCustomerOrPartner &&
+    order.status !== 'completed' &&
+    order.status !== 'cancelled' &&
+    !CLIENT_CANCEL_STATUSES.includes(order.status)
+      ? 'O cancelamento deixou de estar disponível depois do início do serviço (a caminho, no local, em orçamentação ou aguardando pagamento). Para cancelar, contacte a Confiança.'
+      : null;
+
   const techMissingProfile: string[] = [];
   if (isTech) {
     if (!user.nif?.trim()) techMissingProfile.push('NIF');
@@ -1020,6 +1045,7 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
     if (!user.emergency_contact?.trim()) techMissingProfile.push('Contacto de Emergência');
   }
   const isTechBlocked = isTech && (Boolean(user.is_paused) || techMissingProfile.length > 0);
+  const completeBlockers = getCompleteBlockers(order, reportText, items.length);
 
   return (
     <PortalLayout
@@ -1210,17 +1236,26 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
                 </button>
               )}
 
-              {isCustomerOrPartner && order.status === 'pending' && (
+              {/* A-11: um único botão de cancelamento (POST /api/orders/:id/cancel + ConfirmDialog).
+                  Cliente/parceiro só cancelam em pending/accepted (regra do servidor). */}
+              {canCancelOrder && (
                 <button
                   type="button"
-                  onClick={() => setConfirmAction('cancel_pending')}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
+                  disabled={saving}
+                  onClick={() => {
+                    setActionError(null);
+                    setConfirmAction('cancel_order');
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50"
                 >
                   <XCircle className="h-3.5 w-3.5" />
                   <span>
                     {user.role === 'partner_requester' ? 'Cancelar Chamado' : 'Cancelar Pedido'}
                   </span>
                 </button>
+              )}
+              {cancelBlockedNotice && (
+                <p className="w-full text-xs text-slate-500">{cancelBlockedNotice}</p>
               )}
 
               {(isAdmin || isTech) && (
@@ -1284,17 +1319,6 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
                     </a>
                   )}
                 </>
-              )}
-
-              {user?.role !== 'technician' && order.status !== 'completed' && order.status !== 'cancelled' && (
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={handleCancelOrder}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50"
-                >
-                  <span>Cancelar ordem</span>
-                </button>
               )}
 
               {(order.quote_paid || order.service_fee_paid || order.baixa_received_at) && (
@@ -1452,15 +1476,27 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
                   </>
                 )}
                 {(order.status === 'in_progress' || order.status === 'budgeting') && (
-                  <button
-                    type="button"
-                    disabled={saving}
-                    onClick={() => handleTechStep('complete')}
-                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-                  >
-                    <CheckCircle2 className="h-4 w-4" />
-                    <span>Concluir Serviço</span>
-                  </button>
+                  <div className="w-full space-y-2">
+                    {completeBlockers.length > 0 && (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+                        <p className="font-semibold">Para concluir o serviço:</p>
+                        <ul className="mt-1 list-disc pl-4">
+                          {completeBlockers.map((b) => (
+                            <li key={b}>{b}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      disabled={saving || completeBlockers.length > 0}
+                      onClick={() => handleTechStep('complete')}
+                      className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <CheckCircle2 className="h-4 w-4" />
+                      <span>Concluir Serviço</span>
+                    </button>
+                  </div>
                 )}
               </div>
 
@@ -2412,8 +2448,12 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
                   </span>
                 </div>
                 <div className="flex justify-between font-medium text-emerald-700">
-                  <span>Repasse Técnico ({effectivePct}%)</span>
-                  <span>{formatEUR(liveCalc.technicianPayout)}</span>
+                  <span>
+                    Repasse Técnico{shownPayoutPct !== null ? ` (${shownPayoutPct}%)` : ''}
+                  </span>
+                  <span>
+                    {formatEUR(isTech ? order.technician_payout : liveCalc.technicianPayout)}
+                  </span>
                 </div>
                 {isAdmin && (
                   <>
@@ -2904,7 +2944,7 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
             ? 'Recusar este orçamento?'
             : confirmAction === 'release_order'
             ? 'Devolver serviço ao mural?'
-            : 'Cancelar este pedido pendente?'
+            : 'Cancelar esta ordem?'
         }
         description={
           confirmAction === 'soft_delete'
@@ -2913,7 +2953,7 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
             ? 'Ao recusar o orçamento, mão de obra e peças serão zeradas, mantendo-se apenas a taxa de deslocação/diagnóstico.'
             : confirmAction === 'release_order'
             ? `A ordem ${order.reference_code} voltará para o mural disponível para outro técnico aceitar e a gestão será notificada.`
-            : `O pedido ${order.reference_code} será marcado como cancelado.`
+            : `A ordem ${order.reference_code} será marcada como cancelada. Esta ação não pode ser desfeita.`
         }
         confirmLabel={
           confirmAction === 'soft_delete'
@@ -2922,13 +2962,15 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
             ? 'Confirmar Recusa'
             : confirmAction === 'release_order'
             ? 'Devolver ao Mural'
+            : confirmAction === 'cancel_order'
+            ? 'Confirmar Cancelamento'
             : 'Cancelar Pedido'
         }
         onCancel={() => setConfirmAction(null)}
         onConfirm={() => {
           if (confirmAction === 'soft_delete') void handleSoftDeleteOrder();
           else if (confirmAction === 'reject_quote') void handleQuoteDecision('rejected');
-          else if (confirmAction === 'cancel_pending') void handlePartnerCancel();
+          else if (confirmAction === 'cancel_order') void handleCancelOrder();
           else if (confirmAction === 'release_order') void handleReleaseOrder();
         }}
       />

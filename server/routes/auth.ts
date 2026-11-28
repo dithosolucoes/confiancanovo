@@ -10,6 +10,14 @@ import {
   setSessionCookie,
   signToken,
 } from '../infra/auth-session.ts';
+import {
+  registrarAuditoriaIban,
+  valorAlterado,
+  validarCodigoPostal,
+  validarIban,
+  validarNif,
+  validarTelefone,
+} from '../infra/validacao.ts';
 
 // Autenticação, conta e notificações (onze rotas), movidas de server.ts sem alteração de comportamento.
 // Login com limite de tentativas por e-mail (10 erros em 15 minutos bloqueiam por 15 minutos).
@@ -167,6 +175,14 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
     // C-03: técnico público entra inativo até a gestão aprovar
     const isPendingTechnician = targetRole === 'technician';
 
+    // A-08: formato de NIF, IBAN, telefone e código postal (opcionais; erro em português)
+    const vNif = validarNif(nif);
+    const vIban = validarIban(iban);
+    const vTelefone = validarTelefone(phone);
+    const vPostal = validarCodigoPostal(postalCode);
+    const erroFormato = [vNif, vIban, vTelefone, vPostal].find((v) => v.erro)?.erro;
+    if (erroFormato) return res.status(400).json({ error: erroFormato });
+
     const existing = db
       .prepare('SELECT id FROM profiles WHERE lower(email) = lower(?)')
       .get(String(email).trim());
@@ -194,12 +210,12 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
         String(fullName).trim(),
         String(email).trim().toLowerCase(),
         passHash,
-        phone || null,
-        nif || null,
-        iban || null,
+        vTelefone.valor,
+        vNif.valor,
+        vIban.valor,
         address || null,
         city || null,
-        postalCode || null,
+        vPostal.valor,
         isPendingTechnician ? 0 : 1
       );
 
@@ -372,6 +388,19 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
       avatar_url,
     } = body;
 
+    // A-08: só valida o que mudou, para não bloquear edições de dados antigos sem formato válido
+    const checado = (novo: unknown, atual: unknown, validar: (r: unknown) => { valor: string | null; erro?: string }) =>
+      novo === undefined || !valorAlterado(novo, atual)
+        ? { valor: undefined as string | null | undefined, erro: undefined as string | undefined }
+        : validar(novo);
+    const pTelefone = checado(phone, current.phone, validarTelefone);
+    const pNif = checado(nif, current.nif, validarNif);
+    const pIban = checado(iban, current.iban, validarIban);
+    const pPostal = checado(postal_code, current.postal_code, validarCodigoPostal);
+    const pBillingNif = checado(billing_nif, current.billing_nif, validarNif);
+    const erroFormato = [pTelefone, pNif, pIban, pPostal, pBillingNif].find((v) => v.erro)?.erro;
+    if (erroFormato) return res.status(400).json({ error: erroFormato });
+
     let safeAvatarUrl: string | null | undefined = undefined;
     if (avatar_url !== undefined) {
       if (avatar_url === null || avatar_url === '') {
@@ -406,21 +435,25 @@ export function registerAuthRoutes(app: express.Express, ctx: AuthRouteContext) 
       WHERE id = ?
     `).run(
       full_name !== undefined && String(full_name).trim() ? String(full_name).trim() : current.full_name,
-      phone !== undefined ? (phone || null) : current.phone,
-      nif !== undefined ? (nif || null) : current.nif,
-      iban !== undefined ? (iban || null) : current.iban,
+      pTelefone.valor !== undefined ? pTelefone.valor : current.phone,
+      pNif.valor !== undefined ? pNif.valor : current.nif,
+      pIban.valor !== undefined ? pIban.valor : current.iban,
       address !== undefined ? (address || null) : current.address,
       city !== undefined ? (city || null) : current.city,
-      postal_code !== undefined ? (postal_code || null) : current.postal_code,
+      pPostal.valor !== undefined ? pPostal.valor : current.postal_code,
       emergency_contact !== undefined ? (emergency_contact || null) : current.emergency_contact,
       is_paused !== undefined ? (is_paused ? 1 : 0) : current.is_paused,
       billing_name !== undefined ? (billing_name || null) : current.billing_name,
-      billing_nif !== undefined ? (billing_nif || null) : current.billing_nif,
+      pBillingNif.valor !== undefined ? pBillingNif.valor : current.billing_nif,
       billing_address !== undefined ? (billing_address || null) : current.billing_address,
       safeAvatarUrl !== undefined ? 1 : 0,
       safeAvatarUrl ?? null,
       user.id
     );
+    // A-16: cada troca de IBAN fica registada (quem, quando, valor antigo mascarado)
+    if (iban !== undefined && valorAlterado(iban, current.iban)) {
+      registrarAuditoriaIban(db, { profileId: user.id, actorId: user.id, actorRole: user.role, ibanAntigo: current.iban });
+    }
     res.json({ user: getProfilePayload(user.id) });
   });
 
