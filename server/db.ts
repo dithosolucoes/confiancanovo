@@ -348,6 +348,8 @@ export function initDatabase() {
   ensureOrderColumn('suggestion_status', 'TEXT');
   ensureOrderColumn('warranty_return_requested_at', 'TEXT');
   ensureOrderColumn('warranty_return_description', 'TEXT');
+  // Modo de cobrança da garantia gravado na criação da OS (none | fee_only | as_today); OS antigas ficam NULL
+  ensureOrderColumn('warranty_mode', 'TEXT');
   // Datas do orçamento (para o painel de peças e a espera dos fornecedores)
   ensureOrderColumn('quote_sent_at', 'TEXT');
   ensureOrderColumn('quote_decided_at', 'TEXT');

@@ -15,9 +15,10 @@ interface BusinessParam {
   key: string;
   label: string;
   description: string;
-  unit: '%' | '€/km' | '×' | 'sim/não';
+  unit: '%' | '€/km' | '×' | 'sim/não' | 'dias' | 'modo';
   min: number;
   max: number;
+  options: Array<{ value: number; label: string }> | null;
   current_value: number;
   current_effective_from: string | null;
   scheduled: ParamVersion[];
@@ -51,9 +52,11 @@ function todayLocalISO(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function formatValue(value: number, unit: string): string {
+function formatValue(value: number, unit: string, options?: BusinessParam['options']): string {
+  if (options) return options.find((o) => o.value === Number(value))?.label ?? String(value);
   if (unit === '%') return `${value}%`;
   if (unit === 'sim/não') return Number(value) === 1 ? 'Sim' : 'Não';
+  if (unit === 'dias') return `${value} dias`;
   return `${value.toFixed(2)} ${unit}`;
 }
 
@@ -103,7 +106,7 @@ function ParamCard({ param, onSaved }: { param: BusinessParam; onSaved: (params:
         <div className="text-right">
           <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Valor vigente</div>
           <div className="font-display text-2xl font-bold text-slate-900 tabular-nums">
-            {formatValue(param.current_value, param.unit)}
+            {formatValue(param.current_value, param.unit, param.options)}
           </div>
           {param.current_effective_from && (
             <div className="text-[11px] text-slate-500">
@@ -119,7 +122,7 @@ function ParamCard({ param, onSaved }: { param: BusinessParam; onSaved: (params:
           <ul className="mt-1 space-y-0.5">
             {param.scheduled.map((s) => (
               <li key={s.effective_from}>
-                {formatValue(Number(s.value), param.unit)} a partir de {formatDatePT(s.effective_from, false)}
+                {formatValue(Number(s.value), param.unit, param.options)} a partir de {formatDatePT(s.effective_from, false)}
                 {s.reason ? ` — ${s.reason}` : ''}
               </li>
             ))}
@@ -130,15 +133,29 @@ function ParamCard({ param, onSaved }: { param: BusinessParam; onSaved: (params:
       <div className="grid grid-cols-1 gap-4 border-t border-slate-100 pt-4 md:grid-cols-12 md:items-end">
         <div className="md:col-span-2">
           <label className="block text-xs font-medium text-slate-700">Novo valor ({param.unit})</label>
-          <input
-            type="number"
-            step={param.unit === '%' || param.unit === 'sim/não' ? '1' : '0.01'}
-            min={param.min}
-            max={param.max}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm tabular-nums"
-          />
+          {param.options ? (
+            <select
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            >
+              {param.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="number"
+              step={param.unit === '%' || param.unit === 'sim/não' || param.unit === 'dias' ? '1' : '0.01'}
+              min={param.min}
+              max={param.max}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm tabular-nums"
+            />
+          )}
         </div>
         <div className="md:col-span-2">
           <label className="block text-xs font-medium text-slate-700">Vigente a partir de</label>
@@ -198,7 +215,7 @@ function ParamCard({ param, onSaved }: { param: BusinessParam; onSaved: (params:
                 <tr key={h.effective_from}>
                   <td className="py-2 pr-3 tabular-nums">{formatDatePT(h.effective_from, false)}</td>
                   <td className="py-2 pr-3 text-right font-medium tabular-nums">
-                    {formatValue(Number(h.value), param.unit)}
+                    {formatValue(Number(h.value), param.unit, param.options)}
                   </td>
                   <td className="py-2 pr-3 text-slate-600">{h.reason || '—'}</td>
                   <td className="py-2 pr-3 text-slate-600">{h.changed_by || '—'}</td>

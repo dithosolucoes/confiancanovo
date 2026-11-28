@@ -1,6 +1,6 @@
 import type express from 'express';
 import type { UserRole } from '../../src/types/domain.ts';
-import { getParamHistory, PARAM_DEFS, PARAM_KEYS, setParam, type ParamKey } from '../params.ts';
+import { getParamAt, getParamHistory, PARAM_DEFS, PARAM_KEYS, setParam, warrantyModeFromValue, type ParamKey } from '../params.ts';
 
 // Parâmetros de negócio (com vigência) e taxas base de repasse, movidos de server.ts sem alteração de comportamento.
 // As regras de vigência, limites e motivo ficam em server/params.ts (setParam): este módulo só chama essas funções.
@@ -40,6 +40,7 @@ export function registerBusinessParametersRoutes(app: express.Express, ctx: Para
         unit: def.unit,
         min: def.min,
         max: def.max,
+        options: def.options ?? null,
         current_value: current ? Number(current.value) : def.defaultValue,
         current_effective_from: current?.effective_from ?? null,
         scheduled,
@@ -49,6 +50,15 @@ export function registerBusinessParametersRoutes(app: express.Express, ctx: Para
 
   app.get('/api/business-parameters', requireAuth(['super_admin']), (_req, res) => {
     res.json({ parameters: serializeParams() });
+  });
+
+  // Leitura pública só do prazo e do modo de garantia (tela do cliente). Não expõe outros parâmetros.
+  app.get('/api/warranty-policy', (_req, res) => {
+    const now = new Date();
+    res.json({
+      warranty_days: getParamAt(db, 'warranty_days', now),
+      warranty_mode: warrantyModeFromValue(getParamAt(db, 'warranty_mode', now)),
+    });
   });
 
   app.put('/api/business-parameters/:key', requireAuth(['super_admin']), (req, res) => {

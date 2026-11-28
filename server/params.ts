@@ -13,16 +13,27 @@ export type ParamKey =
   | 'berens_parts_markup'
   | 'parts_markup_pct'
   | 'cancel_after_accept_tech_pct'
-  | 'tech_sees_payouts';
+  | 'tech_sees_payouts'
+  | 'warranty_days'
+  | 'warranty_mode';
 
 export interface ParamDef {
   key: ParamKey;
   label: string;
   description: string;
-  unit: '%' | '€/km' | '×' | 'sim/não';
+  unit: '%' | '€/km' | '×' | 'sim/não' | 'dias' | 'modo';
   min: number;
   max: number;
   defaultValue: number;
+  /** Parâmetros de escolha: o valor guardado é o código (índice) da opção. */
+  options?: Array<{ value: number; label: string }>;
+}
+
+/** Modo de cobrança da garantia. O código guardado em business_parameters é o índice desta lista. */
+export const WARRANTY_MODES = ['none', 'fee_only', 'as_today'] as const;
+export type WarrantyMode = (typeof WARRANTY_MODES)[number];
+export function warrantyModeFromValue(value: number): WarrantyMode {
+  return WARRANTY_MODES[Number(value)] ?? 'none';
 }
 
 export const PARAM_DEFS: Record<ParamKey, ParamDef> = {
@@ -85,6 +96,31 @@ export const PARAM_DEFS: Record<ParamKey, ParamDef> = {
     min: 0,
     max: 1,
     defaultValue: 1,
+  },
+  warranty_days: {
+    key: 'warranty_days',
+    label: 'Prazo de garantia (dias a partir da conclusão)',
+    description:
+      'Número de dias, contados da conclusão da OS original, em que o cliente pode pedir retorno em garantia. Pedidos fora do prazo são recusados pelo servidor. Não altera o campo "Garantia (Meses)" do catálogo.',
+    unit: 'dias',
+    min: 1,
+    max: 365,
+    defaultValue: 15,
+  },
+  warranty_mode: {
+    key: 'warranty_mode',
+    label: 'Cobrança do cliente em garantia',
+    description:
+      'Valor cobrado ao cliente nas ordens de garantia: "Sem cobrança" zera taxa de deslocação e M.O.; "Só taxa de deslocação" zera a M.O.; "Cobra como hoje" mantém a cobrança normal. Vale para ordens criadas a partir de hoje.',
+    unit: 'modo',
+    min: 0,
+    max: 2,
+    defaultValue: 0,
+    options: [
+      { value: 0, label: 'Sem cobrança (none)' },
+      { value: 1, label: 'Só taxa de deslocação (fee_only)' },
+      { value: 2, label: 'Cobra como hoje (as_today)' },
+    ],
   },
 };
 
@@ -186,6 +222,12 @@ export function setParam(
   }
   if (value < def.min || value > def.max) {
     return { ok: false, status: 400, error: `O valor deve estar entre ${def.min} e ${def.max} (${def.unit}).` };
+  }
+  if (def.unit === 'dias' && !Number.isInteger(value)) {
+    return { ok: false, status: 400, error: 'O prazo deve ser um número inteiro de dias.' };
+  }
+  if (def.options && !def.options.some((o) => o.value === value)) {
+    return { ok: false, status: 400, error: 'Opção inválida.' };
   }
 
   const reason = String(input.reason ?? '').trim();

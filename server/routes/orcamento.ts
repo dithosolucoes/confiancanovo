@@ -9,7 +9,7 @@ import {
   parseBoundedQuantity,
   resolvePartSalePrice,
 } from '../../src/core/finance/calculator.ts';
-import { getParamAt } from '../params.ts';
+import { getParamAt, toIsoUtc } from '../params.ts';
 
 // Orçamento, sugestão de horário, garantia, avaliação, GPS e ETA, calendário, agenda e visitas de retorno,
 // movidos de server.ts sem alteração de comportamento. Três funções de registro, cada uma no ponto original:
@@ -159,6 +159,16 @@ export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRout
       return res.status(400).json({ error: 'Só é possível acionar garantia após conclusão do serviço.' });
     }
 
+    // Prazo de garantia (warranty_days vigente na data do pedido), contado da conclusão da OS original
+    const warrantyDays = getParamAt(db, 'warranty_days');
+    const concludedAt = new Date(toIsoUtc(existing.completed_at || existing.updated_at));
+    const warrantyEndsAt = new Date(concludedAt.getTime() + warrantyDays * 24 * 60 * 60 * 1000);
+    if (Date.now() > warrantyEndsAt.getTime()) {
+      return res.status(400).json({
+        error: `Prazo de garantia de ${warrantyDays} dias expirado em ${warrantyEndsAt.toLocaleDateString('pt-PT')}. Não é possível acionar garantia.`,
+      });
+    }
+
     const { description, preferred_date } = req.body ?? {};
     if (!description || !String(description).trim()) {
       return res.status(400).json({ error: 'Descreva o motivo do retorno em garantia.' });
@@ -234,6 +244,9 @@ export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRout
       if (!r.ok) return res.status(400).json({ error: r.error });
       extraValue = r.value;
     }
+
+    // Garantia: modo gravado na criação da OS. 'none' e 'fee_only' não cobram M.O. do cliente
+    if (existing.is_warranty && existing.warranty_mode && existing.warranty_mode !== 'as_today') laborValue = 0;
 
     // C-12 e quantidade de peça: validados e precificados no servidor antes de gravar
     type ValidItem = { supplier_id: string | null; description: string; quantity: number; cost: number; price: number };

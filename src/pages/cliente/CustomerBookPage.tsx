@@ -15,6 +15,17 @@ interface PrevTech {
   avatar_url?: string | null;
 }
 
+interface WarrantyPolicy {
+  warranty_days: number;
+  warranty_mode: 'none' | 'fee_only' | 'as_today';
+}
+
+const WARRANTY_MODE_TEXT: Record<WarrantyPolicy['warranty_mode'], string> = {
+  none: 'sem custo para si',
+  fee_only: 'paga só a taxa de deslocação',
+  as_today: 'valores normais',
+};
+
 interface InitialPhoto {
   fileName: string;
   dataUrl: string;
@@ -55,6 +66,8 @@ export function CustomerBookPage() {
   const [error, setError] = useState<string | null>(null);
   const [createdOrderId, setCreatedOrderId] = useState<string | null>(null);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
+  // Prazo e modo de garantia vindos do servidor (parâmetros do negócio)
+  const [warranty, setWarranty] = useState<WarrantyPolicy | null>(null);
 
   // Subscriptions state
   const [subAddress, setSubAddress] = useState(user?.address || '');
@@ -81,6 +94,7 @@ export function CustomerBookPage() {
     if (nonSub[0] && !catalogId) setCatalogId(nonSub[0].id);
     setPrevTechs(t.technicians);
     setSubscriptions(s.subscriptions);
+    apiFetch<WarrantyPolicy>('/api/warranty-policy').then(setWarranty).catch(() => setWarranty(null));
   }
 
   useEffect(() => {
@@ -103,8 +117,6 @@ export function CustomerBookPage() {
   const visitFeeGross = Math.round(visitFeeNet * (1 + visitVatRate / 100) * 100) / 100;
   const visitFeeAcknowledged =
     !!selectedService && visitFeeAckServiceId === selectedService.id;
-  // Garantia: prazo real do servidor (15 dias a partir da conclusão)
-  const WARRANTY_DAYS = 15;
 
   async function handlePhotoFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []).slice(0, 4 - photos.length);
@@ -316,10 +328,12 @@ export function CustomerBookPage() {
                     {formatEUR(selectedService.base_service_fee)} + IVA (
                     {selectedService.default_vat_rate}%).
                   </span>
-                  <span className="inline-flex items-center gap-1 font-medium text-emerald-700">
-                    <ShieldCheck className="h-3.5 w-3.5" />
-                    Garantia de {WARRANTY_DAYS} dias a partir da conclusão · 24h/7d
-                  </span>
+                  {warranty && (
+                    <span className="inline-flex items-center gap-1 font-medium text-emerald-700">
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      Garantia de {warranty.warranty_days} dias a partir da conclusão ({WARRANTY_MODE_TEXT[warranty.warranty_mode]}) · 24h/7d
+                    </span>
+                  )}
                 </div>
               )}
             </div>

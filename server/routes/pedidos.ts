@@ -6,7 +6,7 @@ import path from 'node:path';
 import { calculateServiceFinancials, computeAdditionalChargesSummary, computeProportionalPayout } from '../../src/core/finance/calculator.ts';
 import { getWeeklyPayoutCycle } from '../../src/core/finance/weekly-cycle.ts';
 import { CONFIANCA_COMPANY } from '../../src/core/constants/company.ts';
-import { getParamAt, setParam } from '../params.ts';
+import { getParamAt, setParam, warrantyModeFromValue } from '../params.ts';
 import type { AuthUser } from '../infra/auth-session.ts';
 import type { UserRole } from '../../src/types/domain.ts';
 
@@ -270,6 +270,11 @@ export function registerPedidosRoutes(app: Express, ctx: any): void {
       else if (norm.includes('esquentador')) resolvedFee = rateMap.get('ESQ_REP') ?? 85;
     }
 
+    // Garantia: modo vigente na criação (warranty_mode). 'none' zera a taxa de deslocação; 'fee_only' e
+    // 'as_today' mantêm a taxa. A M.O. é zerada na gravação do orçamento (POST /api/orders/:id/quote).
+    const warrantyMode = is_warranty ? warrantyModeFromValue(getParamAt(db, 'warranty_mode')) : null;
+    if (warrantyMode === 'none') resolvedFee = 0;
+
     // A-12: taxa de deslocação (visita) nunca zero, salvo em garantia. O cliente não define o valor:
     // usa o do catálogo ou o parâmetro WO.
     if (!(resolvedFee > 0) && !is_warranty) {
@@ -346,6 +351,7 @@ export function registerPedidosRoutes(app: Express, ctx: any): void {
     const nifValue = normalizeNif(req.body?.customer_nif) || normalizeNif(profileNif) || normalizeNif(orgNif) || null;
     const applianceValue = String(req.body?.appliance_type ?? '').trim() || null;
     db.prepare('UPDATE service_orders SET customer_nif = ?, appliance_type = ? WHERE id = ?').run(nifValue, applianceValue, id);
+    if (warrantyMode) db.prepare('UPDATE service_orders SET warranty_mode = ? WHERE id = ?').run(warrantyMode, id);
 
     if (Array.isArray(photos) && photos.length > 0) {
       for (const p of photos.slice(0, 5)) {
