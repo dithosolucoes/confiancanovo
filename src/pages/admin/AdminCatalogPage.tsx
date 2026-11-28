@@ -21,7 +21,6 @@ export function AdminCatalogPage() {
   const [baseFee, setBaseFee] = useState(55);
   const [vatRate, setVatRate] = useState<6 | 23>(23);
   const [isSubscription, setIsSubscription] = useState(false);
-  const [warrantyMonths, setWarrantyMonths] = useState(6);
 
   const [editForm, setEditForm] = useState({
     category: '',
@@ -29,7 +28,6 @@ export function AdminCatalogPage() {
     description: '',
     base_service_fee: 55,
     default_vat_rate: 23 as 6 | 23,
-    warranty_months: 6,
     is_subscription: false,
     is_active: true,
   });
@@ -73,7 +71,6 @@ export function AdminCatalogPage() {
           default_vat_rate: vatRate,
           is_subscription: isSubscription,
           subscription_price: isSubscription ? baseFee : null,
-          warranty_months: warrantyMonths,
         }),
       });
       setModalOpen(false);
@@ -95,7 +92,6 @@ export function AdminCatalogPage() {
       description: item.description || '',
       base_service_fee: Number(item.base_service_fee),
       default_vat_rate: item.default_vat_rate === 6 ? 6 : 23,
-      warranty_months: item.warranty_months ?? 6,
       is_subscription: Boolean(item.is_subscription),
       is_active: Boolean(item.is_active),
     });
@@ -237,7 +233,7 @@ export function AdminCatalogPage() {
                           )}
                         </div>
                         <div className="text-xs text-slate-500">
-                          {item.description} · Garantia {item.warranty_months ?? 6} meses
+                          {item.description}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-right">
@@ -432,19 +428,6 @@ export function AdminCatalogPage() {
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3 items-center">
-                <div>
-                  <label className="block text-xs font-medium text-slate-700">
-                    Garantia (Meses)
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={60}
-                    value={warrantyMonths}
-                    onChange={(e) => setWarrantyMonths(Number(e.target.value))}
-                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm tabular-nums"
-                  />
-                </div>
                 <label className="flex items-center gap-2 pt-5 text-xs font-medium text-slate-700 cursor-pointer">
                   <input
                     type="checkbox"
@@ -549,19 +532,6 @@ export function AdminCatalogPage() {
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3 items-center">
-                <div>
-                  <label className="block text-xs font-medium text-slate-700">Garantia (Meses)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={60}
-                    value={editForm.warranty_months}
-                    onChange={(e) =>
-                      setEditForm((f) => ({ ...f, warranty_months: Number(e.target.value) }))
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm tabular-nums"
-                  />
-                </div>
                 <label className="flex items-center gap-2 pt-5 text-xs font-medium text-slate-700 cursor-pointer">
                   <input
                     type="checkbox"

@@ -9,7 +9,7 @@ import {
   parseBoundedQuantity,
   resolvePartSalePrice,
 } from '../../src/core/finance/calculator.ts';
-import { getParamAt, toIsoUtc } from '../params.ts';
+import { getParamAt, toIsoUtc, warrantyModeFromValue } from '../params.ts';
 
 // Orçamento, sugestão de horário, garantia, avaliação, GPS e ETA, calendário, agenda e visitas de retorno,
 // movidos de server.ts sem alteração de comportamento. Três funções de registro, cada uma no ponto original:
@@ -56,10 +56,12 @@ export interface OrcamentoRouteContext {
     destCoords?: Coords | null
   ) => Promise<{ distanceKm: number; durationMinutes: number }>;
   findPortugalAddressCoords: (addr: string) => Coords;
+  nextReferenceCode: (prefix: string) => string;
+  referencePrefixFor: (serviceKind: string) => string;
 }
 
 export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRouteContext) {
-  const { db, requireAuth, canUserAccessOrder, projectOrderForRole, createNotification, broadcastToOrder, sendTransactionalEmail, recalculateOrderInDb, notifyTechnicianOfValueChange } = ctx;
+  const { db, requireAuth, canUserAccessOrder, projectOrderForRole, createNotification, broadcastToOrder, sendTransactionalEmail, recalculateOrderInDb, notifyTechnicianOfValueChange, nextReferenceCode, referencePrefixFor } = ctx;
 
   // C-11: colunas pending_labor_cost / pending_extra_fee são criadas na migração do db.ts.
   // Valor pendente fica fora de labor_cost/extra_fee até o gestor aprovar, por isso não entra no repasse.
@@ -174,35 +176,68 @@ export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRout
       return res.status(400).json({ error: 'Descreva o motivo do retorno em garantia.' });
     }
 
-    db.prepare(`
-      UPDATE service_orders SET
-        warranty_return_requested_at = datetime('now'),
-        warranty_return_description = ?,
-        updated_at = datetime('now')
-      WHERE id = ?
-    `).run(String(description).trim(), existing.id);
+    // Cria OS de garantia nova (is_warranty = 1) ligada à original. A OS original não é alterada.
+    // Cliente, endereço e serviço são copiados; taxa zerada se o modo vigente for 'none'; M.O. é zerada no orçamento.
+    const warrantyMode = warrantyModeFromValue(getParamAt(db, 'warranty_mode'));
+    const warrantyDescription = String(description).trim();
+    const prefDate = preferred_date ? new Date(preferred_date) : null;
+    const hasPrefDate = Boolean(prefDate && !Number.isNaN(prefDate.getTime()));
+    const newId = `ord-${crypto.randomUUID().slice(0, 8)}`;
+    const newReference = nextReferenceCode(referencePrefixFor('avulso'));
+    const newFee = warrantyMode === 'none' ? 0 : Number(existing.service_fee);
 
-    if (preferred_date) {
-      const dt = new Date(preferred_date);
-      if (!Number.isNaN(dt.getTime())) {
-        db.prepare(`
-          INSERT INTO warranty_return_visits (id, service_order_id, technician_id, scheduled_at, notes, status)
-          VALUES (?, ?, ?, ?, ?, 'scheduled')
-        `).run(
-          `ret-${crypto.randomUUID().slice(0, 8)}`,
-          existing.id,
-          existing.technician_id || null,
-          dt.toISOString(),
-          `Solicitado pelo cliente: ${String(description).trim()}`
-        );
-      }
+    db.prepare(`
+      INSERT INTO service_orders (
+        id, reference_code, catalog_id, service_name, category, description, urgency,
+        customer_id, customer_name, customer_phone, requester_org_id, provider_org_id,
+        service_address, address_complement, postal_code, localidade,
+        scheduled_at, status, is_warranty, warranty_mode, warranty_of_order_id,
+        vat_rate, service_fee, service_kind, customer_nif, appliance_type
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?, ?, 'avulso', ?, ?)
+    `).run(
+      newId,
+      newReference,
+      existing.catalog_id || null,
+      existing.service_name,
+      existing.category,
+      warrantyDescription,
+      existing.urgency || 'normal',
+      existing.customer_id || null,
+      existing.customer_name,
+      existing.customer_phone || null,
+      existing.requester_org_id || null,
+      existing.provider_org_id,
+      existing.service_address,
+      existing.address_complement || null,
+      existing.postal_code || null,
+      existing.localidade || null,
+      hasPrefDate ? prefDate!.toISOString() : new Date().toISOString(),
+      warrantyMode,
+      existing.id,
+      existing.vat_rate,
+      newFee,
+      existing.customer_nif || null,
+      existing.appliance_type || null
+    );
+
+    if (hasPrefDate) {
+      db.prepare(`
+        INSERT INTO warranty_return_visits (id, service_order_id, technician_id, scheduled_at, notes, status)
+        VALUES (?, ?, ?, ?, ?, 'scheduled')
+      `).run(
+        `ret-${crypto.randomUUID().slice(0, 8)}`,
+        newId,
+        null,
+        prefDate!.toISOString(),
+        `Solicitado pelo cliente: ${warrantyDescription}`
+      );
     }
 
     if (existing.technician_id) {
       createNotification(
         existing.technician_id,
-        `Garantia solicitada (${existing.reference_code})`,
-        String(description).trim(),
+        `Garantia solicitada (${newReference})`,
+        `OS original ${existing.reference_code}: ${warrantyDescription}`,
         'in_app'
       );
     }
@@ -210,15 +245,15 @@ export function registerOrcamentoRoutes(app: express.Express, ctx: OrcamentoRout
     for (const adm of admins) {
       createNotification(
         adm.id,
-        `Pedido de Retorno em Garantia (${existing.reference_code})`,
-        `${existing.customer_name}: ${String(description).trim()}`,
+        `Pedido de Retorno em Garantia (${newReference})`,
+        `${existing.customer_name} (OS original ${existing.reference_code}): ${warrantyDescription}`,
         'in_app'
       );
     }
 
-    const updated = db.prepare('SELECT * FROM service_orders WHERE id = ?').get(existing.id);
-    broadcastToOrder(existing.id, { type: 'order:updated', orderId: existing.id });
-    res.json({ order: projectOrderForRole(updated, user.role) });
+    const created = db.prepare('SELECT * FROM service_orders WHERE id = ?').get(newId);
+    broadcastToOrder(newId, { type: 'order:updated', orderId: newId });
+    res.json({ order: projectOrderForRole(created, user.role), warranty_order_id: newId, reference_code: newReference });
   });
 
   // Launch or update Quote + Parts (used by Admin or Technician)

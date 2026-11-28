@@ -156,6 +156,13 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
   const [warrantyModalOpen, setWarrantyModalOpen] = useState(false);
   const [warrantyDescription, setWarrantyDescription] = useState('');
   const [warrantyPreferredDate, setWarrantyPreferredDate] = useState('');
+  // Prazo de garantia em dias vindo do parâmetro do servidor (fonte única)
+  const [warrantyDays, setWarrantyDays] = useState<number | null>(null);
+  useEffect(() => {
+    apiFetch<{ warranty_days: number }>('/api/warranty-policy')
+      .then((p) => setWarrantyDays(Number(p.warranty_days)))
+      .catch(() => setWarrantyDays(null));
+  }, []);
 
   // Return Visit state & Customer Reschedule
   const [returnDate, setReturnDate] = useState(
@@ -574,7 +581,7 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
     setSaving(true);
     setActionError(null);
     try {
-      await apiFetch(`/api/orders/${order.id}/warranty-request`, {
+      const res = await apiFetch<{ warranty_order_id: string; reference_code: string }>(`/api/orders/${order.id}/warranty-request`, {
         method: 'POST',
         body: JSON.stringify({
           description: warrantyDescription,
@@ -587,7 +594,7 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
       setWarrantyDescription('');
       setWarrantyPreferredDate('');
       await loadOrder();
-      notify('Pedido de retorno em garantia enviado para a equipa técnica.');
+      notify(`Pedido de garantia registado: nova OS ${res.reference_code} (${res.warranty_order_id}).`);
     } catch (err: any) {
       setActionError(err.message);
     } finally {
@@ -2780,7 +2787,9 @@ export function OrderDetailView({ backRoute }: { backRoute: string }) {
               Solicitar Retorno em Garantia
             </h3>
             <p className="text-xs text-slate-500">
-              Todos os serviços incluem garantia de 6 meses sobre a intervenção realizada.
+              {warrantyDays !== null
+                ? `Todos os serviços incluem garantia de ${warrantyDays} dias a partir da conclusão, sobre a intervenção realizada.`
+                : 'Todos os serviços incluem garantia sobre a intervenção realizada.'}
             </p>
             <div className="space-y-3">
               <div>

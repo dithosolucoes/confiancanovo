@@ -469,6 +469,8 @@ const contextoOrcamento = {
   notifyTechnicianOfValueChange,
   computeRouteDistance,
   findPortugalAddressCoords,
+  nextReferenceCode,
+  referencePrefixFor,
 };
 
 // Contexto das rotas de pedidos (server/routes/pedidos.ts)
